@@ -10,6 +10,18 @@ be used for porting Windows code into native Unix executables.
 Wine is free software, released under the GNU LGPL; see the file
 LICENSE for the details.
 
+## WINE-OS2 INTRODUCTION
+
+This fork is designed to add support to OS/2 Applications inspired by the historical implementation of the OS/2 Subsystem for Windows NT, which was limited to OS/2 1.x character mode programs.
+An additional Presentation Manager Add-On for Windows NT was also released by Microsoft only to add an incomplete version of PM from OS/2 1.3, to run some graphical programs.
+This means in practical terms, that any OS/2 program to run will use an anchor program (called wineos2.exe) to load the NE/LX executable and pass the Environment Setup.
+Like the original NT subsystem, all virtual OS/2 configuration will be stored on Wine's Registry, instead config.sys or os2.ini or os2sys.ini.
+To avoid reinvent the wheel (like similar projects like OS2Free or 2ine), Wine's own Win32 API foundation will be used to implement the OS/2 user space API.
+The initial project will implement the DOSCALLS and DOSCALLS1 using NTDLL from Wine codebase, including the 16 to 32-bit trunks.
+Later on, Presentation Manager will be implemented using GDI32, USER32, KERNEL32 and other potential dlls from Wine itself.
+The final steps, should be dedicated to bridge Network, Printing, System Administrations, REXX, and etc, using Wine infrastructure, and an open-source implementation of REXX.
+Multimedia, such as MMPM/2, DIVE, RAGE and OpenGL, will be dedicated at the end.
+Also by using the Wine foundation, it is expected that a OS/2 program will call a Windows program, and vice-versa. There's no need to implement the MDOS or Win-OS/2 since their functionality is now inherent.
 
 ## QUICK START
 
@@ -143,6 +155,12 @@ Wine is not perfect, so some programs may crash. If that happens you
 will get a crash log that you should attach to your report when filing
 a bug.
 
+## RUNNING OS/2 PROGRAMS
+
+The wineos2.exe loader should be activated by the Wine's loader, otherwise use...
+```
+wine wineos2.exe -r program.exe
+```
 
 ## GETTING MORE INFORMATION
 
