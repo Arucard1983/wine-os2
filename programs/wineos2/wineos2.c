@@ -8,32 +8,32 @@
 
 #pragma pack(push, 1)
 
-/* DOS MZ stub header structure */
+/* Official DOS MZ stub header structure (64 bytes total) */
 typedef struct {
-    uint16_t e_magic[2];      /* Magic number "MZ" (0x5A4D) */
-    uint16_t e_cblp;
-    uint16_t e_cp;
-    uint16_t e_crlc;
-    uint16_t e_cparhdr;
-    uint16_t e_minalloc;
-    uint16_t e_maxalloc;
-    uint16_t e_ss;
-    uint16_t e_sp;
-    uint16_t e_csum;
-    uint16_t e_ip;
-    uint16_t e_cs;
-    uint16_t e_lfarlc;
-    uint16_t e_ovno;
-    uint16_t e_res;
-    uint16_t e_oemid;
-    uint16_t e_oeminfo;
-    uint16_t e_res2;
-    uint32_t e_lfanew;     /* Offset to the OS/2 LX header */
+    uint16_t e_magic;      /* Magic number "MZ" (0x5A4D) */
+    uint16_t e_cblp;       /* Bytes on last page of file */
+    uint16_t e_cp;         /* Pages in file */
+    uint16_t e_crlc;       /* Relocations */
+    uint16_t e_cparhdr;    /* Size of header in paragraphs */
+    uint16_t e_minalloc;   /* Minimum extra paragraphs needed */
+    uint16_t e_maxalloc;   /* Maximum extra paragraphs needed */
+    uint16_t e_ss;         /* Initial (relative) SS value */
+    uint16_t e_sp;         /* Initial SP value */
+    uint16_t e_csum;       /* Checksum */
+    uint16_t e_ip;         /* Initial IP value */
+    uint16_t e_cs;         /* Initial (relative) CS value */
+    uint16_t e_lfarlc;     /* File address of relocation table */
+    uint16_t e_ovno;       /* Overlay number */
+    uint16_t e_res[4];     /* Reserved words */
+    uint16_t e_oemid;      /* OEM identifier */
+    uint16_t e_oeminfo;    /* OEM information */
+    uint16_t e_res2[10];   /* Reserved words */
+    uint32_t e_lfanew;     /* Offset to the OS/2 LX header (strictly at byte 60) */
 } IMAGE_DOS_HEADER;
 
 /* OS/2 LX (Linear eXecutable) header structure */
 typedef struct {
-    uint8_t  magic[2];        /* Magic number "LX" (0x584C) */
+    uint8_t  magic[2];     /* Magic number: "LX" or "LE" */
     uint8_t  border;       /* Byte order (0 = Little Endian) */
     uint8_t  worder;       /* Word order (0 = Little Endian) */
     uint32_t level;        /* Format Level */
@@ -100,6 +100,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* 1. Read the full official MZ Header */
     if (fread(&dos_header, sizeof(IMAGE_DOS_HEADER), 1, file) != 1) {
         printf("Error reading DOS header.\n");
         fclose(file);
@@ -113,7 +114,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Jump to the OS/2 LX header */
+    /* 2. Jump using the native e_lfanew field from the header struct */
     if (fseek(file, dos_header.e_lfanew, SEEK_SET) != 0) {
         printf("Error seeking to LX offset (0x%X).\n", dos_header.e_lfanew);
         fclose(file);
@@ -126,7 +127,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Verify LX/LE Signature ('L' and 'X'/'E') */
+    /* 3. Verify LX/LE Signature ('L' and 'X'/'E') using the 2-byte array */
     if (lx_header.magic[0] != 'L' || (lx_header.magic[1] != 'X' && lx_header.magic[1] != 'E')) {
         printf("Error: Invalid executable. LX/LE signature not found (Found: %c%c).\n", 
                lx_header.magic[0], lx_header.magic[1]);
@@ -144,7 +145,7 @@ int main(int argc, char *argv[]) {
     printf("Page Size: %d bytes\n", lx_header.page_size);
     printf("Number of Objects detected: %d\n\n", lx_header.num_objects);
 
-    /* Move file pointer to the Object Table (relative to LX header start) */
+    /* 4. Use dos_header.e_lfanew again to find the Object Table offset */
     absolute_obj_tbl_offset = dos_header.e_lfanew + lx_header.obj_tbl_offset;
     if (fseek(file, absolute_obj_tbl_offset, SEEK_SET) != 0) {
         printf("Error seeking to Object Table (Offset: 0x%X).\n", absolute_obj_tbl_offset);
@@ -175,3 +176,4 @@ int main(int argc, char *argv[]) {
     fclose(file);
     return 0;
 }
+
