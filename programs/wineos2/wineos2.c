@@ -10,7 +10,7 @@
 
 /* DOS MZ stub header structure */
 typedef struct {
-    uint16_t e_magic;      /* Magic number "MZ" (0x5A4D) */
+    uint16_t e_magic[2];      /* Magic number "MZ" (0x5A4D) */
     uint16_t e_cblp;
     uint16_t e_cp;
     uint16_t e_crlc;
@@ -33,7 +33,7 @@ typedef struct {
 
 /* OS/2 LX (Linear eXecutable) header structure */
 typedef struct {
-    uint8_t  magic;        /* Magic number "LX" (0x584C) */
+    uint8_t  magic[2];        /* Magic number "LX" (0x584C) */
     uint8_t  border;       /* Byte order (0 = Little Endian) */
     uint8_t  worder;       /* Word order (0 = Little Endian) */
     uint32_t level;        /* Format Level */
@@ -126,9 +126,10 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Verify LX Signature ('L' and 'X') */
-    if (lx_header.magic != 'L' || lx_header.magic != 'X') {
-        printf("Error: Invalid executable. LX signature not found.\n");
+    /* Verify LX/LE Signature ('L' and 'X'/'E') */
+    if (lx_header.magic[0] != 'L' || (lx_header.magic[1] != 'X' && lx_header.magic[1] != 'E')) {
+        printf("Error: Invalid executable. LX/LE signature not found (Found: %c%c).\n", 
+               lx_header.magic[0], lx_header.magic[1]);
         fclose(file);
         return 1;
     }
