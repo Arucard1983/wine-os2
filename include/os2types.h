@@ -15,6 +15,7 @@ typedef USHORT         APIRET16; /* Native 16-bit (NE) return code */
 typedef ULONG          HVIO;     /* VIO handle (0 = Default) */
 
 #define NO_ERROR       0L
+#define ERROR_VIO_INVALID_HANDLE    421L
 
 /* 3. FLAT POINTERS (Emulator performs Map16to32 into these types) */
 typedef void          *PVOID;
