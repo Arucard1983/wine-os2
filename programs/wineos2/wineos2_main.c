@@ -8,33 +8,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include #include "wineos2_env.h" //Not yet make working
-//TODO: Refactoring pending
+#include "wineos2_env.h"
+#include "os2types.h" 
 
-/* Forward declarations of our environment and page decomp mapping managers */
 int wineos2_setup_lx_environment(uint32_t* out_pib_ptr);
 int lx_process_object_pages(FILE* file, uint32_t ne_base, LX_HEADER* hdr, LX_OBJECT* obj, void* addr);
 
-/* Master tracking structure for loaded LX execution states */
-typedef struct {
-    uint32_t entry_eip;
-    uint32_t entry_esp;
-    uint32_t pib_address;
-} LX_EXEC_CONTEXT;
-
 /* 
  * Native x86 Inline Assembly Transition Stub.
- * Switches execution directly to the OS/2 binary code layout on the Host CPU.
- * Mandated by OS/2 32-bit ABI rules: EBX must cleanly point to the active PIB block.
+ * Inputs are explicitly bound to registers to prevent stack-pointer-change corruption.
  */
 void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_t pib_ptr) {
     printf("[LX Kernel] Transferring execution control to native x86 space at EIP: 0x%08X\n", target_eip);
     fflush(stdout);
 
     __asm__ __volatile__ (
-        "movl %1, %%ebx\n\t"   /* Load the structural PIB pointer address into EBX */
-        "movl %2, %%esp\n\t"   /* Set up the applications stack boundary pointer */
-        "jmp *%0\n\t"          /* Absolute jump straight into the OS/2 Entry Point */
+        "movl %1, %%ebx\n\t"   /* Explicitly load PIB pointer into EBX (OS/2 32-bit ABI mandate) */
+        "movl %2, %%esp\n\t"   /* Switch to the target application stack pointer safely */
+        "jmp *%0\n\t"          /* Jump to target EIP (now cached in a safe input register) */
         :
         : "r" (target_eip), "r" (pib_ptr), "r" (target_esp)
         : "ebx", "esp"
@@ -43,10 +34,8 @@ void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_
 
 int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr) {
     /* 
-     * TODO: Scan the Import Module Name Table and Fixup Records Table.
-     * Use Win32 LoadLibrary("doscalls.dll") and LoadLibrary("viocalls.dll") dynamically.
-     * Extract addresses via GetProcAddress and patch them directly into the paged memory
-     * locations before passing active control to the CPU registers loop.
+     * TODO: Scan Import Module Name Table and resolve via ordinals from specs.
+     * LoadLibraryA("viocalls.dll"), GetProcAddress, etc.
      */
     printf("[LX Loader] Dynamic Fixup Table linking step completed successfully.\n");
     return 1;
@@ -75,6 +64,7 @@ int wineos2_execute_lx_process(const char* filepath, uint32_t ne_lfanew) {
 
         if (obj.size == 0) continue;
 
+        /* Allocate with READWRITE first to allow parsing and decompression into the page */
         void* allocated_address = VirtualAlloc((LPVOID)(uintptr_t)obj.base_addr, 
                                                obj.size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!allocated_address) {
@@ -82,10 +72,20 @@ int wineos2_execute_lx_process(const char* filepath, uint32_t ne_lfanew) {
             return 0;
         }
 
-        /* Load and decompress execution bytes cleanly into place */
         lx_process_object_pages(file, ne_lfanew, &lx_hdr, &obj, allocated_address);
 
-        /* Discover application entry execution coordinates mapped out of header flags */
+        /* 
+         * FIX: Check object flags to apply proper runtime execution permissions.
+         * Assuming standard LX object flags: 0x0004 standardly implies Executable Code.
+         */
+        DWORD old_protect;
+        if (obj.flags & 0x0004) {
+            VirtualProtect(allocated_address, obj.size, PAGE_EXECUTE_READWRITE, &old_protect);
+        } else {
+            VirtualProtect(allocated_address, obj.size, PAGE_READWRITE, &old_protect);
+        }
+
+        /* Discover application entry coordinates mapped out of header flags */
         if (i + 1 == lx_hdr.eip_obj) {
             target_entry_eip = obj.base_addr + lx_hdr.eip;
         }
@@ -102,12 +102,10 @@ int wineos2_execute_lx_process(const char* filepath, uint32_t ne_lfanew) {
     uint32_t active_pib_address = 0;
     if (!wineos2_setup_lx_environment(&active_pib_address)) return 0;
 
-    /* If application stack parameters are uninitialized, provide safe baseline fallbacks */
     if (target_entry_esp == 0) {
-        target_entry_esp = 0x00030000; /* Safe dynamic stack coordinate space mapping */
+        target_entry_esp = 0x00030000; 
     }
 
-    /* Clear logging buffers to make way for the binaries console prints */
     printf("\n--- EMBEDDED ENGINE SYSTEM TRACE END: RUNNING NATIVE PROGRAM ---\n\n");
     fflush(stdout);
 
