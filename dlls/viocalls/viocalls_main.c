@@ -7,9 +7,7 @@
 #include <windows.h>
 #include <stdio.h>
 #include <stdint.h>
-
-#define NO_ERROR                    0
-#define ERROR_VIO_INVALID_HANDLE    350
+#include "os2types.h"
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     switch (fdwReason) {
@@ -23,13 +21,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 }
 
 /* 32-bit OS/2 API VioWrtTTY: Writes a character string directly to the console stream */
-uint16_t WINAPI os2_VioWrtTTY(PCHAR pStr, ULONG cbStr, ULONG hVio) {
+APIRET WINAPI os2_VioWrtTTY(PCHAR pStr, ULONG cbStr, HVIO hVio) {
     if (hVio != 0) return ERROR_VIO_INVALID_HANDLE;
     if (cbStr == 0 || !pStr) return NO_ERROR;
 
     HANDLE host_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD written = 0;
 
+    /* WriteFile/WriteConsoleA works perfectly with Wine's virtual console host */
     if (WriteFile(host_stdout, pStr, cbStr, &written, NULL)) {
         return NO_ERROR;
     }
@@ -38,7 +37,7 @@ uint16_t WINAPI os2_VioWrtTTY(PCHAR pStr, ULONG cbStr, ULONG hVio) {
 }
 
 /* 32-bit OS/2 API VioSetCurPos: Sets the text coordinates for the terminal cursor */
-uint16_t WINAPI os2_VioSetCurPos(ULONG row, ULONG column, ULONG hVio) {
+APIRET WINAPI os2_VioSetCurPos(ULONG row, ULONG column, HVIO hVio) {
     if (hVio != 0) return ERROR_VIO_INVALID_HANDLE;
 
     HANDLE host_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
