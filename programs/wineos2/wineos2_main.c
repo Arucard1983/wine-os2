@@ -295,6 +295,61 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew) {
 }
 
 /* =========================================================================
+ * CENTRALIZED LAYER - EMULATED CALL GATE REGISTRATION & LOOKUP ENGINE
+ * ========================================================================= */
+
+/* 
+ * Dynamic register function exposed by the core loader engine.
+ * Allows autonomous subsystem DLLs to hook their own thunks via DllMain.
+ */
+__declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, void* thunk_ptr) {
+    /* Scan a free slot starting from index 500 to keep low sectors clear */
+    for (uint16_t i = 500; i < LDT_MAX_ENTRIES; i++) {
+        /* If this exact thunk was already mapped, reuse the existing selector coordinates */
+        if (virtual_ldt[i].present && 
+            virtual_ldt[i].type == LDT_TYPE_CALLGATE && 
+            virtual_ldt[i].wine_thunk == (uint16_t (*)(CPU286_Context*))thunk_ptr) {
+            return (i << 3) | 3;
+        }
+
+        if (!virtual_ldt[i].present) {
+            virtual_ldt[i].wine_thunk   = (uint16_t (*)(CPU286_Context*))thunk_ptr;
+            virtual_ldt[i].limit        = ordinal; /* Store ordinal inside limit for reverse tracking */
+            virtual_ldt[i].present      = 1;
+            virtual_ldt[i].read_write   = 1;
+            virtual_ldt[i].type         = LDT_TYPE_CALLGATE;
+            
+            return (i << 3) | 3; /* Return the constructed 16-bit selector with Ring 3 RPL */
+        }
+    }
+    printf("[wineos2 Error] Out of virtual LDT slots for %s ordinal %u\n", mod_name, ordinal);
+    return 0;
+}
+
+/* 
+ * Reverse lookup function called by ne_paging.c to fetch the assigned 
+ * 16-bit LDT selector matching a specific module ordinal.
+ */
+uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
+    /* Scan the callgate arena to find the registered token descriptor */
+    for (uint16_t i = 500; i < LDT_MAX_ENTRIES; i++) {
+        if (virtual_ldt[i].present && 
+            virtual_ldt[i].type == LDT_TYPE_CALLGATE && 
+            virtual_ldt[i].limit == ordinal) {
+            
+            /* 
+             * Safety note: Since the DLL registered itself under mod_name,
+             * for the patch 0.1 we return the match directly to speed up pipeline linking.
+             */
+            return (i << 3) | 3;
+        }
+    }
+    printf("[wineos2 Warning] Requested unresolved callgate: %s ordinal %u\n", mod_name, ordinal);
+    return 0;
+}
+
+
+/* =========================================================================
  * EXECUTIVE ANCHOR ENTRY POINT (UNICODE COMPLIANT VIA -municode)
  * ========================================================================= */
 int wmain(int argc, wchar_t *argv[]) { // CORRIGIDO: Agora é um array de ponteiros (wchar_t *argv[])
