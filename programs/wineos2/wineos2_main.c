@@ -141,15 +141,21 @@ void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_
     printf("[LX Kernel] Transferring execution control to native x86 space at EIP: 0x%08X\n", target_eip);
     fflush(stdout);
 
+    /* Force the compiler to place specific registers */
+    register uint32_t reg_eip __asm__("eax") = target_eip;
+    register uint32_t reg_pib __asm__("ebx") = pib_ptr; /* ABI OS/2: EBX = PIB */
+    register uint32_t reg_esp __asm__("edx") = target_esp;
+
     __asm__ __volatile__ (
-        "movl %1, %%ebx\n\t"   /* Map PIB pointer into EBX as mandated by the OS/2 32-bit ABI */
-        "movl %2, %%esp\n\t"   /* Safely switch to the allocated target application stack pointer */
-        "jmp *%0\n\t"          /* Jump directly to the application entry EIP */
+        "movl %%edx, %%esp\n\t"  /* Safe transition to OS/2 stack */
+        "pushl $0\n\t"           /* Store a null return block (end of stack) */
+        "jmp *%%eax\n\t"         /* Jump to EIP pointedto EAX */
         :
-        : "r" (target_eip), "r" (pib_ptr), "r" (target_esp)
-        : "ebx", "esp"
+        : "r" (reg_eip), "r" (reg_pib), "r" (reg_esp)
+        : "memory"               /* Stop GCC to resort memory reading/wrinting */
     );
 }
+
 
 int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr) {
     /* Kept on standby to process table symbols and ordinals dynamically from spec files */
