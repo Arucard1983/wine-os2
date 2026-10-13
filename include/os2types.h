@@ -1,4 +1,8 @@
-/* include/os2types.h */
+/* 
+ *  os2types.h - Base Architectural Types for IBM OS/2 Subsystem Compatibility
+ *  (c) Arucard 2026 - Wine-OS/2 Project
+ */
+
 #ifndef __WINE_OS2TYPES_H
 #define __WINE_OS2TYPES_H
 
@@ -13,6 +17,8 @@ typedef unsigned long  ULONG;   /* 32 bits */
 typedef ULONG          APIRET;   /* Native 32-bit (LX) return code */
 typedef USHORT         APIRET16; /* Native 16-bit (NE) return code */
 typedef ULONG          HVIO;     /* VIO handle (0 = Default) */
+typedef ULONG          HKBD;     /* KBD handle */
+typedef ULONG          HMOU;     /* MOU handle */
 
 #define NO_ERROR       0L
 #define ERROR_VIO_INVALID_HANDLE    421L
@@ -54,3 +60,4 @@ typedef struct _KBDKEYINFO {
 } KBDKEYINFO, *PKBDKEYINFO;
 
 #endif /* __WINE_OS2TYPES_H */
+
