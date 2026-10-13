@@ -262,67 +262,78 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew) {
     }
     return 1;
 }
+
 /* =========================================================================
- • * EXECUTIVE ANCHOR ENTRY POINT (UNICODE COMPLIANT VIA -municode)
- • ========================================================================= */
-int wmain(int argc, wchar_t argv[]) {
+ * EXECUTIVE ANCHOR ENTRY POINT (UNICODE COMPLIANT VIA -municode)
+ * ========================================================================= */
+int wmain(int argc, wchar_t *argv[]) { // CORRIGIDO: Agora é um array de ponteiros (wchar_t *argv[])
     IMAGE_DOS_HEADER dos_header;
     uint8_t magic_sig[2];
-    FILE file;
+    FILE *file;                       // CORRIGIDO: Agora é um ponteiro (FILE *file)
     char target_path[MAX_PATH];
+
     if (argc < 2) {
         printf("Usage: wineos2.exe <target_os2_file.exe>\n");
         return 1;
     }
-    /* Convert wide character path string to standard ASCII for fopen tracks compatibility */
-    WideCharToMultiByte(CP_ACP, 0, argv[1], -1, target_path, MAX_PATH, NULL, NULL);
+
+    /* Convert wide character path string to UTF-8 for reliable file access in Wine/Linux */
+    WideCharToMultiByte(CP_UTF8, 0, argv[1], -1, target_path, MAX_PATH, NULL, NULL); // CORRIGIDO: CP_UTF8 para compatibilidade
+
     file = fopen(target_path, "rb");
     if (!file) {
         perror("Error opening target executable");
         return 1;
     }
+
     /* 1. Parse and validate the standard MS-DOS MZ stub header */
     if (fread(&dos_header, sizeof(IMAGE_DOS_HEADER), 1, file) != 1) {
         printf("Error: Failed to read DOS Header.\n");
         fclose(file);
         return 1;
     }
+
     if (dos_header.e_magic != 0x5A4D) { /* "MZ" */
         printf("Error: Invalid DOS stub magic identification signature.\n");
         fclose(file);
         return 1;
     }
+
     /* 2. Position the file descriptor to the extended header offset */
     if (fseek(file, dos_header.e_lfanew, SEEK_SET) != 0) {
         printf("Error: Executable file missing valid extended headers alignment.\n");
         fclose(file);
         return 1;
     }
+
     if (fread(magic_sig, 1, 2, file) != 2) {
         printf("Error: Failed to read extended executable signature bytes.\n");
         fclose(file);
         return 1;
     }
+
     printf("==================================================\n");
     printf("  WINEOS2 EXECUTIVE UNIFIED LOADER (Win32 Target) \n");
     printf("==================================================\n");
+
     /* 3. Perform architectural routing based on header magic (NE vs LX/LE) */
     if (magic_sig[0] == 'N' && magic_sig[1] == 'E') {
         printf("Signature Detected: 'NE' -> 16-bit Segmented Protected Mode\n");
         wineos2_execute_ne_process(file, dos_header.e_lfanew);
     }
     else if ((magic_sig[0] == 'L' && magic_sig[1] == 'X') ||
-        (magic_sig[0] == 'L' && magic_sig[1] == 'E')) {
+             (magic_sig[0] == 'L' && magic_sig[1] == 'E')) {
         printf("Signature Detected: '%c%c' -> 32-bit Flat Paged Protected Mode\n", magic_sig[0], magic_sig[1]);
-    wineos2_execute_lx_process(file, dos_header.e_lfanew);
-        }
-        else {
-            printf("Error: Unknown or unsupported OS/2 executable signature structure (%c%c).\n",
-                   magic_sig[0], magic_sig[1]);
-            fclose(file);
-            return 1;
-        }
-        printf("==================================================\n");
+        wineos2_execute_lx_process(file, dos_header.e_lfanew);
+    }
+    else {
+        printf("Error: Unknown or unsupported OS/2 executable signature structure (%c%c).\n",
+               magic_sig[0], magic_sig[1]);
         fclose(file);
-        return 0;
+        return 1;
+    }
+
+    printf("==================================================\n");
+    fclose(file);
+    return 0;
 }
