@@ -35,8 +35,8 @@ typedef struct {
 
 #pragma pack(pop)
 
-/* Forward declaration for external callgate registration pipeline */
-uint16_t register_api_callgate(const char* mod_name, uint16_t ordinal);
+/* Forward declaration for the centralized selector recovery function */
+uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal);
 
 /* Resolves module string names out of the standard NE target import tables dynamically */
 static void ne_resolve_module_name(FILE* file, uint32_t ne_base, uint16_t mod_ref_table_off, uint16_t import_name_table_off, uint16_t module_index, char* out_name) {
@@ -96,9 +96,29 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
                     strcpy(resolved_dll_name, "DOSCALLS");
                 }
 
-                /* Registers a clean Protected Mode Call Gate selector into the master LDT map */
-                resolved_selector = register_api_callgate(resolved_dll_name, target.ordinal);
-                target_valid = 1;
+                /* 
+                 * =========================================================================
+                 * DECENTRALIZED COUPLING: Dynamic Subsystem Loading Architecture
+                 * =========================================================================
+                 * Instead of guessing the thunk mapping here, we force Wine to load the 
+                 * target subsystem DLL. When loaded, its autonomous DllMain triggers and 
+                 * hooks its own call gates inside the master LDT table via wineos2.exe.
+                 */
+                char dll_filename[270];
+                snprintf(dll_filename, sizeof(dll_filename), "%s.dll", resolved_dll_name);
+                
+                HMODULE hSubsystem = GetModuleHandleA(dll_filename);
+                if (!hSubsystem) {
+                    hSubsystem = LoadLibraryA(dll_filename);
+                }
+
+                if (hSubsystem) {
+                    /* Fetch the 16-bit LDT selector coordinates from the newly populated global map */
+                    resolved_selector = wineos2_get_callgate_selector(resolved_dll_name, target.ordinal);
+                    if (resolved_selector != 0) {
+                        target_valid = 1;
+                    }
+                }
             }
         }
 
@@ -206,10 +226,9 @@ int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr) {
         virtual_ldt[ldt_index].limit      = alloc_size - 1;
         virtual_ldt[ldt_index].present    = 1;
         virtual_ldt[ldt_index].read_write = 1;
-        virtual_ldt[ldt_index].type       = LDT_TYPE_SEGMENT; 
-
+        virtual_ldt[ldt_index].type       = LDT_TYPE_SEGMENT;
         printf("[NE Loader] Segment #%d mapped at: %p | Selector registration: 0x%04X\n",
-               ldt_index, linear_mem, (ldt_index << 3) | 3);
-    }
-    return 1;
+        ldt_index, linear_mem, (ldt_index << 3) | 3);
+        }
+   return 1;
 }
