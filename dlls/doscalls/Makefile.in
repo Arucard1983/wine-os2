@@ -1,16 +1,8 @@
-# Makefile.in for Wine-OS/2 Core Subsystem DLL (doscalls.dll)
-
 MODULE    = doscalls.dll
 IMPORTLIB = doscalls
-
-# Force 32-bit architectural compilation and clean alignment
-EXTRACFLAGS   = -m32
-EXTRADLLFLAGS = -m32 -Wb,--main-module,wineos2.exe
 
 # Link against the native Wine/NT low-level kernel services
 IMPORTS   = ntdll
 
 C_SRCS = \
 	doscalls_main.c
-
-@MAKE_DLL_RULES@
