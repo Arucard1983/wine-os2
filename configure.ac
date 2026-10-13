@@ -3642,16 +3642,6 @@ WINE_CONFIG_MAKEFILE(tools/winemaker)
 WINE_CONFIG_MAKEFILE(tools/wmc)
 WINE_CONFIG_MAKEFILE(tools/wrc)
 
-# Register the new Wine-OS/2 subsystem libraries
-wine_fn_config_dll dlls/doscalls
-wine_fn_config_dll dlls/kbdcalls
-wine_fn_config_dll dlls/moucalls
-wine_fn_config_dll dlls/viocalls
-
-# Register the new Wine-OS/2 userland executive engines and shells
-wine_fn_config_program programs/wineos2
-wine_fn_config_program programs/pmshell
-
 dnl End of auto-generated output commands
 
 WINE_EXTERNAL(libs/compiler-rt)
