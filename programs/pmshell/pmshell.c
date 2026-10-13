@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-int __cdecl main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
     HKEY hKeyIni, hKeySysIni;
     LONG result;
@@ -59,11 +59,6 @@ int __cdecl main(int argc, char *argv[])
     printf("==================================================\n");
     fflush(stdout);
 
-    /* 
-     * TODO: Implement the native Win32/PE Presentation Manager desktop surface rendering,
-     * workspace synchronization, and shell folder tracking mapped entirely from the Registry.
-     */
-
     /* Keep the execution engine alive as a persistent background shell manager */
     while (1)
     {
@@ -72,4 +67,3 @@ int __cdecl main(int argc, char *argv[])
 
     return 0;
 }
-
