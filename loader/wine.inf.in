@@ -72,23 +72,28 @@ AddReg=\
     SessionMgr,\
     ThemeManager
 
-[DefaultInstall]
+[DefaultInstall.nt]
 Needs=BaseInstall
 WineFakeDlls=FakeDllsWin32
+;; Add the OS/2 Environment
 AddReg=\
-    VCRuntime.ntx86
+    VCRuntime.ntx86,\
+    VersionInfo,\
+    WineOS2Registry
+
+;; Add copy files to target
+CopyFiles = \
+    SystemFiles, \
+    OS2SubsystemFiles, \
+    OS2ProgramFiles
 
 [DefaultInstall.ntx86]
 Needs=BaseInstall
 WineFakeDlls=FakeDllsWin32
-;; Append our newly created WineOS2 environment to the master Windows registry installation list
 AddReg=\
     VCRuntime.ntx86,\
     VersionInfo,\
-    WineOS2Registry.ntx86
-;; Append our layout target files to be copied into C:\windows\system32 and C:\OS2
-CopyFiles = SystemFiles, OS2SubsystemFiles, OS2ProgramFiles
-
+    
 [DefaultInstall.ntarm]
 Needs=BaseInstall
 WineFakeDlls=FakeDllsWin32
@@ -1353,17 +1358,26 @@ NlsFiles  = nls
 SortFiles = nls
 WinmdFiles = winmd,include
 
+[DefaultInstall.nt]
+CopyFiles = \
+    ColorFiles, \
+    EtcFiles, \
+    InfFiles, \
+    NlsFiles, \
+    SortFiles, \
+    WinmdFiles, \
+    OS2SubsystemFiles, \   
+    OS2ProgramFiles        
+
 [DestinationDirs]
-ColorFiles = 23
-EtcFiles  = 12,etc
-InfFiles  = 17
-NlsFiles  = 11
-SortFiles = 10,globalization\sorting
-WinmdFiles = 11,winmetadata
-;; 11 maps directly to %SystemRoot%\system32 (C:\windows\system32)
-OS2SubsystemFiles = 11  
-;; 24 maps to the root of drive C:, creating a clean C:\OS2 layout directory matching IBM standards
-OS2ProgramFiles   = 24,OS2 
+ColorFiles        = 23
+EtcFiles          = 12,etc
+InfFiles          = 17
+NlsFiles          = 11
+SortFiles         = 10,globalization\sorting
+WinmdFiles        = 11,winmetadata
+OS2SubsystemFiles = 24,OS2
+OS2ProgramFiles   = 24,OS2
 
 [OS2SubsystemFiles]
 doscalls.dll
@@ -1378,19 +1392,19 @@ pmshell.exe
 ;; =========================================================================
 ;; WINEOS2 SYSTEM REGISTRY HIVE INITIALIZATION (NT-Style Environment)
 ;; =========================================================================
-[WineOS2Registry.ntx86]
+[WineOS2Registry]
 ;; HKCU maps to HKEY_CURRENT_USER for user-specific PM structures
 HKCU,"Software\Wine\WineOS2\OS2.INI",,0x00000010
 
 ;; HKLM maps to HKEY_LOCAL_MACHINE for global virtual machine subsystem variables
 HKLM,"Software\Wine\WineOS2\OS2SYS.INI",,0x00000010
 
-;; Injects the strict NT-Style subsystem environment parameters
+;; Injects the strict NT-Style subsystem environment parameters (Sem aspas literais)
 HKLM,"Software\Wine\WineOS2\Environment","PATH",0x00020000,"C:\OS2;C:\OS2\SYSTEM;%PATH%"
 HKLM,"Software\Wine\WineOS2\Environment","DPATH",0x00000000,"C:\OS2;C:\OS2\SYSTEM"
 HKLM,"Software\Wine\WineOS2\Environment","LIBPATH",0x00000000,".;C:\OS2\DLL;C:\OS2\SYSTEM"
 HKLM,"Software\Wine\WineOS2\Environment","COMSPEC",0x00020000,"%SystemRoot%\system32\cmd.exe"
 HKLM,"Software\Wine\WineOS2\Environment","WINEOS2_HOST_ROOT",0x00000000,"/opt/wineos2"
 
-;; Injects the historical shell booting configuration parameters
+;; Injects the historical shell booting configuration parameters (Sem aspas literais)
 HKLM,"Software\Wine\WineOS2\ConfigSys","PROTSHELL",0x00000000,"C:\OS2\PMSHELL.EXE C:\OS2\OS2.INI C:\OS2\OS2SYS.INI %SystemRoot%\system32\cmd.exe"
