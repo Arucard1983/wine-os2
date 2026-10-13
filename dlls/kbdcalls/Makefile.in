@@ -1,10 +1,8 @@
 MODULE    = kbdcalls.dll
 IMPORTLIB = kbdcalls
 
-EXTRACFLAGS   = -m32
-EXTRADLLFLAGS = -m32 -Wb,--main-module,wineos2.exe
+# Link against standard Wine low-level kernel abstractions
+IMPORTS   = ntdll
 
 C_SRCS = \
 	kbdcalls_main.c
-
-@MAKE_DLL_RULES@
