@@ -1,5 +1,17 @@
+# Makefile.in for Wine-OS/2 Executive Unified Loader
+
 MODULE    = wineos2.exe
 APPMODE   = -mconsole -municode
 
-SOURCES = \
-	main.c
+# Force 32-bit architectural compilation and clean standard alignment flags
+EXTRACFLAGS    = -m32
+EXTRADLLFLAGS  = -m32
+
+C_SRCS = \
+	lx_paging.c \
+	ne_paging.c \
+	wineos2_env.c \
+	wineos2_main.c
+
+@MAKE_PROG_RULES@
+
