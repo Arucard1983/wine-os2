@@ -1,9 +1,7 @@
-# moucalls.spec - Native OS/2 Mouse Subsystem API Dynamic Link Library
-# (c) Arucard 2026 - Wine-OS/2 Project
+# kbdcalls.spec - OS/2 Keyboard Subsystem Ordinal Mapping Descriptor
 
-# 16-bit
-10 pascal Mou16GetNumButtons(ptr long) os2_Mou16GetNumButtons
+# 16-bit Legacy OS/2 APIs (NE) - Called by 286 Emulator Call Gates
+4   pascal Kbd16CharIn(ptr long long) os2_Kbd16CharIn
 
-# 32-bit
-10 stdcall -norelay MouGetNumButtons(ptr long) os2_MouGetNumButtons
-
+# 32-bit Native OS/2 APIs (LX) - Called natively by 32-bit flat binaries
+104 cdecl  KbdCharIn(ptr long long) os2_KbdCharIn
