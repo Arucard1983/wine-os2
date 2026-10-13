@@ -1,0 +1,9 @@
+# Makefile.in for Wine-OS/2 Presentation Manager Shell
+
+MODULE    = pmshell.exe
+APPMODE   = -mconsole
+
+C_SRCS = \
+	pmshell.c
+
+@MAKE_PROG_RULES@
