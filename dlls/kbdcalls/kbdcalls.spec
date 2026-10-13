@@ -1,4 +1,9 @@
-# kbdcalls.spec - Native OS/2 Keyboard Subsystem API Dynamic Link Library
+# moucalls.spec - Native OS/2 Mouse Subsystem API Dynamic Link Library
 # (c) Arucard 2026 - Wine-OS/2 Project
 
-4 stdcall -norelay KbdCharIn(ptr long long) os2_KbdCharIn
+# 16-bit
+10 pascal Mou16GetNumButtons(ptr long) os2_Mou16GetNumButtons
+
+# 32-bit
+10 stdcall -norelay MouGetNumButtons(ptr long) os2_MouGetNumButtons
+
