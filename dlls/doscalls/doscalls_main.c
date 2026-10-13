@@ -12,6 +12,9 @@
 #include "os2types.h"
 #include "wineos2_286cpu.h"
 
+/* Import dynamic registration routine from the master wineos2.exe core engine */
+uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
+
 /* Import explicit NTDLL functions from the Wine/NT environment */
 NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
                                     PVOID apc_context, PIO_STATUS_BLOCK io_status, 
@@ -159,4 +162,27 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
 
     ctx->sp += 12; 
     return (uint16_t)rc;
+}
+
+/* =========================================================================
+ * SUBSYSTEM INITIALIZATION - AUTONOMOUS BOOTSTRAP PIPELINE
+ * ========================================================================= */
+
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
+    if (fdwReason == DLL_PROCESS_ATTACH) {
+        /* Disable unnecessary thread injection logs to optimize execution speeds */
+        DisableThreadLibraryCalls(hinstDLL);
+
+        /* 
+         * The subsystem autonomously hooks its own historical 16-bit 
+         * execution call gates inside the centralized master wineos2 LDT structure.
+         */
+        wineos2_register_callgate("DOSCALLS", 5,   os2_Dos16Exit);
+        wineos2_register_callgate("DOSCALLS", 137, os2_Dos16Read);
+        wineos2_register_callgate("DOSCALLS", 138, os2_Dos16Write);
+
+        printf("[Doscalls] Autonomous 16-bit Callgate registration completed via wineos2 engine.\n");
+        fflush(stdout);
+    }
+    return TRUE;
 }
