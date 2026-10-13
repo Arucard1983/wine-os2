@@ -14,6 +14,7 @@
 #include "wineos2_286cpu.h"
 #include "lx_paging.c"
 #include "ne_paging.c"
+#include "wineos2_env.h"
 
 /* Define the master Local Descriptor Table instance once for the process space */
 OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
