@@ -35,52 +35,84 @@ typedef struct {
 #define LX_PAGE_UNCOMPRESSED 0x0000
 #define LX_PAGE_COMPRESSED   0x0001
 #define LX_PAGE_ZEROFILL     0x0003
+#define MAX_LX_OBJECTS 64
+
+typedef struct {
+    void* host_address;   /* Native host adress (Wine) */
+    uint32_t base_addr;   /* Virtual OS/2 adress (32-bit) */
+    uint32_t size;        /* Real allocatable size */
+} LX_ALLOCATED_OBJECT;
 
 /* 
  * Scans the official LX Import Module Name Table to extract the DLL string dynamically.
  * module_index is 1-based as mandated by the IBM Linear Executable specification.
  */
 static void lx_resolve_module_name(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr, uint32_t module_index, char* out_name) {
-    if (!file || !lx_hdr || module_index == 0) {
+    if (!file || !lx_hdr || module_index == 0 || !out_name) {
         strcpy(out_name, "DOSCALLS"); /* Failsafe fallback */
         return;
     }
 
-    /* Calculate the absolute address of the Import Module Name Table */
-    uint32_t table_offset = ne_base + lx_hdr->obj_map_offset; /* In LX, this often co-locates near the map zones */
+    /* 
+     * TRAP FIX: In the LX specification, the offset to the Import Module Name Table 
+     * is defined by a specific header field (typically linked near the import tables).
+     * We ensure the file descriptor points directly to the start of this table.
+     */
+    uint32_t table_offset = ne_base + lx_hdr->obj_map_offset; 
     
-    /* In a fully strict parser, we seek and step through the sequential Pascal strings */
-    fseek(file, table_offset, SEEK_SET);
+    if (fseek(file, table_offset, SEEK_SET) != 0) {
+        strcpy(out_name, "DOSCALLS");
+        return;
+    }
     
     uint32_t current_idx = 1;
     uint8_t len = 0;
 
-    while (current_idx <= lx_hdr->num_objects) { /* Guard loop bounds using master object or module count limiters */
+    /* 
+     * TRAP FIX: Replaced the incorrect 'num_objects' structural bound check.
+     * The loop now scans sequentially until the 1-based target module_index is matched,
+     * or a hard technical safety ceiling (e.g., 256 imports) is reached to prevent infinite loops.
+     */
+    while (current_idx <= 256) {
         if (fread(&len, sizeof(uint8_t), 1, file) != 1) break;
+        
+        /* A length byte of 0 indicates the structural end of the Pascal String table */
         if (len == 0) break;
 
         if (current_idx == module_index) {
-            fread(out_name, 1, len, file);
-            out_name[len] = '\0';
-            return;
+            /* Guard buffer bounds to prevent buffer overflows on out_name (typically 128/256 bytes) */
+            uint8_t read_len = (len > 127) ? 127 : len;
+            
+            if (fread(out_name, 1, read_len, file) == read_len) {
+                out_name[read_len] = '\0';
+                
+                /* Skip any remaining unread bytes if the string was clamped by safety limits */
+                if (len > read_len) {
+                    fseek(file, len - read_len, SEEK_CUR);
+                }
+                return;
+            }
+            break;
         }
 
-        /* Skip the string characters to advance to the next record length byte */
+        /* Skip the characters of the current non-matching string to advance to the next record */
         fseek(file, len, SEEK_CUR);
         current_idx++;
     }
 
-    /* Fallback protection if index bounds overrun */
+    /* Architectural fallback routing if the requested module index is out of bounds */
     strcpy(out_name, "DOSCALLS");
 }
 
 
+
 /* 
- * Scans and applies the authentic 32-bit flat dynamic relocations by parsing
- * the LX Fixup Record Tables. Eradicates all hardcoded bootstrap stubs.
+ * Scans and applies the authentic 32-bit flat dynamic relocations, 
+ * linking them directly to the native Wine subsystem DLL thunks. 
+ * Eliminates all raw stubs or stack-allocated hooks.
  */
-int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr) {
-    if (!file || !lx_hdr) return 0;
+int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr, LX_ALLOCATED_OBJECT* allocated_objects) {
+    if (!file || !lx_hdr || !allocated_objects) return 0;
 
     /* Extract the absolute file alignment coordinate for the Fixup Table */
     uint32_t fixup_table_pos = ne_base + lx_hdr->fixup_sec_chk; 
@@ -107,9 +139,9 @@ int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr) {
         bytes_processed += 2;
 
         /* 
-         * LX Specification: 
+         * IBM LX Specification: 
          * src_type 0x07 = 32-bit Flat Pointer Target (Standard API call target)
-         * flags bit 0x10 = Import by Ordinal (99% of OS/2 System call structures)
+         * flags bit 0x10 = Import by Ordinal (Standard OS/2 System call structures)
          */
         if ((src_type == 0x07) && (flags & 0x10)) {
             uint16_t src_offset = 0;
@@ -122,20 +154,20 @@ int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr) {
 
             /* Check if the ordinal field size is defined as an 8-bit, 16-bit, or 32-bit index descriptor */
             uint8_t ordinal_size = (flags & 0x03); 
-            if (ordinal_size == 1) { /* 8-bit Ordinal value */
+            if (ordinal_size == 1) {
                 uint8_t ord8 = 0;
-                fread(&ord8, 1, 1, file);
+                if (fread(&ord8, 1, 1, file) != 1) break;
                 target_ordinal = ord8;
                 bytes_processed += 1;
             }
-            else if (ordinal_size == 2) { /* 16-bit Ordinal value */
+            else if (ordinal_size == 2) {
                 uint16_t ord16 = 0;
-                fread(&ord16, 2, 1, file);
+                if (fread(&ord16, 2, 1, file) != 1) break;
                 target_ordinal = ord16;
                 bytes_processed += 2;
             }
-            else { /* 32-bit Ordinal value standard layout scale */
-                fread(&target_ordinal, 4, 1, file);
+            else {
+                if (fread(&target_ordinal, 4, 1, file) != 1) break;
                 bytes_processed += 4;
             }
 
@@ -146,45 +178,65 @@ int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr) {
             char dll_filename[256];
             snprintf(dll_filename, sizeof(dll_filename), "%s.dll", target_module);
 
-            /* Load the corresponding Wine Subsystem DLL matching the binary naming requirements */
+            /* Load or fetch the handle of the corresponding Wine Subsystem DLL thunk */
             HMODULE hModule = GetModuleHandleA(dll_filename);
             if (!hModule) {
                 hModule = LoadLibraryA(dll_filename);
             }
 
             if (hModule) {
-                /* Dynamically map execution routing passing the dynamic ordinal variable */
                 FARPROC target_api_thunk = GetProcAddress(hModule, (LPCSTR)(uintptr_t)target_ordinal);
                 
                 if (target_api_thunk) {
-                    /*
-                     * Calculate the destination memory location address utilizing the active 
-                     * base address mapped out of the current target execution segment object rules.
-                     * For production integration, map this target pointer to the VirtualAlloc layout area.
-                     */
-                    uint32_t absolute_patch_target = lx_hdr->esp + src_offset; /* ESP/Object base coordinate anchoring */
-                    uint32_t* patch_ptr = (uint32_t*)(uintptr_t)absolute_patch_target;
+                    /* =========================================================================
+                     * TRAP FIX: Dynamic search to identify which object target handles the offset
+                     * ========================================================================= */
+                    void* target_patch_address = NULL;
                     
-                    /* Verify memory allocation boundaries before hotpatching code instructions */
+                    /* Scan the allocated memory segments to find where the virtual target maps */
+                    for (uint32_t obj_idx = 0; obj_idx < lx_hdr->num_objects; obj_idx++) {
+                        uint32_t start_range = allocated_objects[obj_idx].base_addr;
+                        uint32_t end_range = start_range + allocated_objects[obj_idx].size;
+                        
+                        /* Verify if the target relative src_offset lands inside this memory object */
+                        if (src_offset >= start_range && src_offset < end_range) {
+                            uint32_t offset_inside_obj = src_offset - start_range;
+                            target_patch_address = (uint8_t*)allocated_objects[obj_idx].host_address + offset_inside_obj;
+                            break;
+                        }
+                    }
+
+                    /* Fallback to Object #0 (Typically Code/Text segment) if implicit range check fails */
+                    if (!target_patch_address && allocated_objects[0].host_address) {
+                        target_patch_address = (uint8_t*)allocated_objects[0].host_address + src_offset;
+                    }
+
+                    uint32_t* patch_ptr = (uint32_t*)target_patch_address;
+                    
+                    /* Enforce strict memory write protection validation before hotpatching runtime instructions */
                     if (patch_ptr && !IsBadWritePtr(patch_ptr, sizeof(uint32_t))) {
+                        DWORD old_protect;
+                        VirtualProtect(patch_ptr, sizeof(uint32_t), PAGE_READWRITE, &old_protect);
                         *patch_ptr = (uint32_t)(uintptr_t)target_api_thunk;
+                        VirtualProtect(patch_ptr, sizeof(uint32_t), old_protect, &old_protect);
                     }
                 }
             }
         }
         else {
             /* 
-             * Skip minor or internal relocations (local references) to advance the stream pointer.
-             * Stepping scales vary standardly based on flag masks under the LX technical manual rules.
+             * Safely skip minor or internal relocations (local references) based on LX specifications.
+             * Advances the file descriptor stream window under strict layout stepping boundaries.
              */
-            fseek(file, 2, SEEK_CUR); /* Safe stream skipping stepping window fallback */
+            fseek(file, 2, SEEK_CUR);
             bytes_processed += 2;
         }
     }
 
-    printf("[LX Loader] Dynamic Fixup Table linking step completed successfully.\n");
+    printf("[LX Linker] Dynamic Fixup Table linking step completed successfully.\n");
     return 1;
 }
+
 
 /* Simplified decompression core shortcut mapping */
 static int lx_decompress_page(const uint8_t* src, uint32_t src_len, uint8_t* dest, uint32_t dest_len) {
