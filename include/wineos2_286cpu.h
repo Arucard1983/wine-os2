@@ -934,10 +934,11 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             /* =========================================================================
              * STRING MANIPULATION (MOVSB/MOVSW with Repeat Prefix [REP] Support)
              * ========================================================================= */
-            case 0xA4:   /* MOVSB */
+           case 0xA4:   /* MOVSB */
             case 0xA5: { /* MOVSW */
                 uint32_t count = (prefix == 0xF3) ? ctx->cx : 1;
                 uint16_t size = (opcode == 0xA4) ? 1 : 2;
+                uint32_t bytes_copied = 0;
                 int fault_triggered = 0;
 
                 for (uint32_t i = 0; i < count; i++) {
@@ -951,6 +952,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     }
 
                     memcpy(dest_ptr, src_ptr, size);
+                    bytes_copied++;
 
                     if (IS_DF_SET(ctx)) {
                         ctx->si -= size; ctx->di -= size;
@@ -959,16 +961,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     }
                 }
 
+                /* Update Cx with the exact number of instructions subtracted */
                 if (prefix == 0xF3) {
-                    ctx->cx = fault_triggered ? (ctx->cx - count) : 0;
+                    ctx->cx -= bytes_copied;
                 }
-
-                /* FIX: Since the opcode byte was consumed inside re_execute, we MUST */
-                /* advance the instruction pointer here to bypass the string byte securely. */
-                ctx->ip++;
                 break;
             }
-
 
 
 
