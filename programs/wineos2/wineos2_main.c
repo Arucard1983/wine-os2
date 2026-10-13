@@ -132,6 +132,7 @@ typedef struct {
 int wineos2_setup_lx_environment(uint32_t* out_pib_ptr);
 int lx_process_object_pages(FILE* file, uint32_t ne_base, LX_HEADER* hdr, LX_OBJECT* obj, void* addr);
 int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr);
+int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr, LX_ALLOCATED_OBJECT* allocated_objects);
 
 /* =========================================================================
  * LX SUBSYSTEM (NATIVE 32-BIT X86)
@@ -156,25 +157,31 @@ void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_
     );
 }
 
-
-int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr) {
-    /* Kept on standby to process table symbols and ordinals dynamically from spec files */
-    printf("[LX Loader] Dynamic Fixup Table linking step completed successfully.\n");
-    return 1;
-}
-
+/* =========================================================================
+ * EXECUTIVE ENGINE - LX SUBSYSTEM PROCESSING (NATIVE 32-BIT X86)
+ * ========================================================================= */
 int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
     LX_HEADER lx_hdr;
-    fseek(file, ne_lfanew, SEEK_SET);
+    LX_ALLOCATED_OBJECT allocated_objects[MAX_LX_OBJECTS];
+    uint32_t target_entry_eip = 0;
+    uint32_t target_entry_esp = 0;
+    uint32_t active_pib_address = 0;
+    uint32_t absolute_obj_table;
+
+    if (!file) return 0;
+
+    /* Initialize the allocated objects tracking structure to prevent memory garbage */
+    memset(allocated_objects, 0, sizeof(allocated_objects));
+
+    if (fseek(file, ne_lfanew, SEEK_SET) != 0) return 0;
     if (fread(&lx_hdr, sizeof(LX_HEADER), 1, file) != 1) return 0;
 
     printf("[Loader] Parsing LX (Linear Executable) 32-bit OS/2 structure...\n");
 
-    uint32_t absolute_obj_table = ne_lfanew + lx_hdr.obj_tbl_offset;
-    uint32_t target_entry_eip = 0;
-    uint32_t target_entry_esp = 0;
+    absolute_obj_table = ne_lfanew + lx_hdr.obj_tbl_offset;
 
-    for (uint32_t i = 0; i < lx_hdr.num_objects; i++) {
+    /* Iterate through the structural memory objects defined by the IBM LX header */
+    for (uint32_t i = 0; i < lx_hdr.num_objects && i < MAX_LX_OBJECTS; i++) {
         LX_OBJECT obj;
         fseek(file, absolute_obj_table + (i * sizeof(LX_OBJECT)), SEEK_SET);
         if (fread(&obj, sizeof(LX_OBJECT), 1, file) != 1) break;
@@ -189,6 +196,16 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
             return 0;
         }
 
+        /* 
+         * TRAP FIX: Store the memory allocation metrics inside our tracking table.
+         * This allows the Fixup Linker Engine to map dynamic DLL API thunks 
+         * directly into the correct object space instead of throwing a stack crash.
+         */
+        allocated_objects[i].host_address = allocated_address;
+        allocated_objects[i].base_addr = obj.base_addr;
+        allocated_objects[i].size = obj.size;
+
+        /* Load and decompress pages from file directly into the newly allocated host frame */
         lx_process_object_pages(file, ne_lfanew, &lx_hdr, &obj, allocated_address);
 
         /* Apply Win32 runtime memory protections based on LX object flags (0x0004 standardly implies Executable) */
@@ -199,23 +216,31 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
             VirtualProtect(allocated_address, obj.size, PAGE_READWRITE, &old_protect);
         }
 
+        /* Map entry point offsets to absolute addresses based on 1-based object indices */
         if (i + 1 == lx_hdr.eip_obj) target_entry_eip = obj.base_addr + lx_hdr.eip;
         if (i + 1 == lx_hdr.esp_obj) target_entry_esp = obj.base_addr + lx_hdr.esp;
     }
 
-    wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr);
+    /* 
+     * TRAP FIX: Pass the populated allocated_objects anchor array 
+     * to perform a strict dynamic ordinal linking stage.
+     */
+    wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr, allocated_objects);
 
-    uint32_t active_pib_address = 0;
+    /* Allocate and structure the Process Information Block for the OS/2 runtime context */
     if (!wineos2_setup_lx_environment(&active_pib_address)) return 0;
 
+    /* Fallback stack pointer arrangement if the binary header omitted explicit ESP bounds */
     if (target_entry_esp == 0) target_entry_esp = 0x00030000;
 
     printf("\n--- EMBEDDED ENGINE SYSTEM TRACE END: RUNNING NATIVE 32-BIT PROGRAM ---\n\n");
     fflush(stdout);
 
+    /* Switch stacks and transfer execution control directly into the 32-bit linear OS/2 space */
     wineos2_jump_to_lx_kernel(target_entry_eip, target_entry_esp, active_pib_address);
     return 1;
 }
+
 
 /* =========================================================================
  * NE SUBSYSTEM (EMULATED 16-BIT 286 CPU)
