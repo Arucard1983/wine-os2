@@ -3642,6 +3642,13 @@ WINE_CONFIG_MAKEFILE(tools/winemaker)
 WINE_CONFIG_MAKEFILE(tools/wmc)
 WINE_CONFIG_MAKEFILE(tools/wrc)
 
+WINE_CONFIG_MAKEFILE(dlls/doscalls)
+WINE_CONFIG_MAKEFILE(dlls/moucalls)
+WINE_CONFIG_MAKEFILE(dlls/kbdcalls)
+WINE_CONFIG_MAKEFILE(dlls/viocalls)
+WINE_CONFIG_MAKEFILE(programs/pmshell)
+WINE_CONFIG_MAKEFILE(programs/wineos2)
+
 dnl End of auto-generated output commands
 
 WINE_EXTERNAL(libs/compiler-rt)
