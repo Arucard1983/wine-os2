@@ -1,10 +1,7 @@
 MODULE    = viocalls.dll
 IMPORTLIB = viocalls
 
-EXTRACFLAGS   = -m32
-EXTRADLLFLAGS = -m32 -Wb,--main-module,wineos2.exe
+IMPORTS   = ntdll
 
 C_SRCS = \
 	viocalls_main.c
-
-@MAKE_DLL_RULES@
