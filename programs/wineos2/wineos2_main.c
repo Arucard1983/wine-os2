@@ -277,8 +277,10 @@ __declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_n
 uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
     uint16_t i;
     for (i = 500; i < LDT_MAX_ENTRIES; i++) {
-        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE && virtual_ldt[i].limit == ordinal) {
-            return (i << 3) | 3;
+       if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE && 
+         virtual_ldt[i].limit == ordinal && strcmp(virtual_ldt[i].mod_name, mod_name) == 0) {
+        return (i << 3) | 3;
+          }
         }
     }
     return 0;
