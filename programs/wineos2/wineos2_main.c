@@ -113,23 +113,28 @@ typedef struct {
 /* =========================================================================
  * LX SUBSYSTEM JUMP NATIVE CONTEXT
  * ========================================================================= */
-void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_t pib_ptr) {
-    register uint32_t reg_eip __asm__("eax") = target_eip;
-    register uint32_t reg_pib __asm__("ebx") = pib_ptr;
-    register uint32_t reg_esp __asm__("edx") = target_esp;
 
-    printf("[LX Kernel] Transferring execution control to native x86 space at EIP: 0x%08X\n", target_eip);
+void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_t pib_ptr) {
+    printf("[LX Kernel] Transferring execution control to native x86 space at EIP: 0x%08X (ESP: 0x%08X)\n", 
+           target_eip, target_esp);
     fflush(stdout);
 
+    // Place the values specified by the standard
     __asm__ __volatile__ (
-        "movl %%edx, %%esp\n\t"
-        "pushl $0\n\t"
-        "jmp *%%eax\n\t"
+        "movl %1, %%esp\n\t"   // Force ESP target_esp (from "edx")
+        "pushl $0\n\t"         // Align the stack / Simulate a null return
+        "jmp *%0\n\t"          // jump tp target_eip (from "eax")
         :
-        : "r" (reg_eip), "r" (reg_pib), "r" (reg_esp)
-        : "memory"
+        : "a" (target_eip),    // "a" instruct the compiler to follow stricly the EAX
+          "d" (target_esp),    // "d" instruct the compiler to follow stricly the EDX
+          "b" (pib_ptr)        // "b" instruct the compiler to put stricly the PIB on EBX (a standard on OS/2 32-bit)
+        : "memory"             // Memory clobber to obligate GCC to flush the registers
     );
+
+    // The compiler knew that this point will never be reached
+    __builtin_unreachable();
 }
+
 
 int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
     LX_HEADER lx_hdr;
@@ -184,7 +189,13 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
     wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr, allocated_objects);
     if (!wineos2_setup_lx_environment(&active_pib_address)) return 0;
 
-    if (target_entry_esp == 0) target_entry_esp = 0x00030000;
+    if (target_entry_esp == 0) {
+    /* Allocate 64KB of real stack on free adress selected by Wine */
+    void* lx_stack = VirtualAlloc(NULL, 65536, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    /* ESP points to the top of the memory heap (the stacks grows downward) */
+    target_entry_esp = (uint32_t)(uintptr_t)lx_stack + 65535;
+}
+
 
     printf("\n--- EMBEDDED ENGINE SYSTEM TRACE END: RUNNING NATIVE 32-BIT PROGRAM ---\n\n");
     fflush(stdout);
@@ -214,8 +225,9 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew) {
     }
 
     memset(&cpu_context, 0, sizeof(CPU286_Context));
-    cpu_context.cs = ((ne_hdr.magic[0] == 'N' && ne_hdr.magic[1] == 'E') ? ((ne_hdr.cs_ip >> 16) << 3) | 3 : 0);
-    cpu_context.ip = ne_hdr.cs_ip & 0xFFFF;
+    cpu_context.cs = (ne_hdr.ne_cs << 3) | 3; 
+    cpu_context.ip = ne_hdr.ne_ip;
+
 
     if (ne_hdr.ss_sp == 0) {
         cpu_context.ss = (2 << 3) | 3;
