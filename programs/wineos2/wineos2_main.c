@@ -136,7 +136,7 @@ void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_
 }
 
 
-int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
+int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
     LX_HEADER lx_hdr;
     LX_ALLOCATED_OBJECT allocated_objects[MAX_LX_OBJECTS];
     uint32_t target_entry_eip = 0;
@@ -187,7 +187,6 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
     }
 
     wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr, allocated_objects);
-    if (!wineos2_setup_lx_environment(&active_pib_address)) return 0;
 
     if (target_entry_esp == 0) {
     /* Allocate 64KB of real stack on free adress selected by Wine */
@@ -204,7 +203,7 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew) {
     return 1;
 }
 
-int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew) {
+int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
     NE_HEADER ne_hdr;
     CPU286_Context cpu_context;
     uint16_t auto_data_selector;
@@ -291,7 +290,8 @@ int main(int argc, char *argv[]) {
     IMAGE_DOS_HEADER dos_header;
     uint8_t magic_sig[2];
     FILE *file;
-
+    uint32_t active_pib_address = 0;
+    
     if (argc < 2) {
         printf("Usage: wineos2.exe <target_os2_file.exe>\n");
         return 1;
@@ -317,11 +317,18 @@ int main(int argc, char *argv[]) {
     printf("==================================================\n");
     printf("  WINEOS2 EXECUTIVE UNIFIED LOADER (Win32 Target) \n");
     printf("==================================================\n");
+
+    if (!wineos2_setup_lx_environment(&active_pib_address)) {
+        printf("Error: Failed to initialize OS/2 simulation environment.\n");
+        fclose(file);
+        return 1;
+    }
+    
     if (magic_sig[0] == 'N' && magic_sig[1] == 'E') {
-        wineos2_execute_ne_process(file, dos_header.e_lfanew);
+        wineos2_execute_ne_process(file, dos_header.e_lfanew, active_pib_address);
     }
     else if ((magic_sig[0] == 'L' && magic_sig[1] == 'X') || (magic_sig[0] == 'L' && magic_sig[1] == 'E')) {
-        wineos2_execute_lx_process(file, dos_header.e_lfanew);
+        wineos2_execute_lx_process(file, dos_header.e_lfanew, active_pib_address);
     }
     else {
         printf("Error: Unknown architecture signature (%c%c).\n", magic_sig[0], magic_sig[1]);
