@@ -1,7 +1,10 @@
 MODULE    = moucalls.dll
 IMPORTLIB = moucalls
 
-IMPORTS   = ntdll
+IMPORTS   = kernel32 user32 ntdll
 
 C_SRCS = \
+	moucalls_main.c
+
+SOURCES = \
 	moucalls_main.c
