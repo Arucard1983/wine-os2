@@ -20,7 +20,11 @@ typedef ULONG          HVIO;     /* VIO handle (0 = Default) */
 typedef ULONG          HKBD;     /* KBD handle */
 typedef ULONG          HMOU;     /* MOU handle */
 
+/* Fix: Protected against duplicate definitions from windows.h / winerror.h */
+#ifndef NO_ERROR
 #define NO_ERROR       0L
+#endif
+
 #define ERROR_VIO_INVALID_HANDLE    421L
 
 /* 3. FLAT POINTERS (Emulator performs Map16to32 into these types) */
