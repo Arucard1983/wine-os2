@@ -11,8 +11,8 @@
 #include "os2types.h"
 #include "wineos2_286cpu.h"
 
-/* Import dynamic registration routine from the master wineos2.exe core engine */
-uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
+/* Define the function pointer type for the callgate registration routine */
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
 
 /* =========================================================================
  * 32-BIT NATIVE CORES (LX Subsystem - Routes directly to Win32 Console API)
@@ -51,20 +51,26 @@ APIRET CDECL os2_KbdCharIn(PKBDKEYINFO pkbci, USHORT fWait, HKBD hkbd) {
 
 uint16_t os2_Kbd16CharIn(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4; /* Skip 4 bytes of Far CS:IP return address */
+    uint16_t pInfo_sel;
+    uint16_t pInfo_off;
+    uint16_t fWait;
+    uint16_t hkbd;
+    KBDKEYINFO* host_info;
+    APIRET rc;
     
     /* Pascal order: Unpacking parameters from highest stack coordinate to lowest */
-    uint16_t pInfo_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t pInfo_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t fWait     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    pInfo_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    pInfo_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    fWait     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    hkbd      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
 
-    KBDKEYINFO* host_info = (KBDKEYINFO*)mode16to32(pInfo_sel, pInfo_off);
+    host_info = (KBDKEYINFO*)mode16to32(pInfo_sel, pInfo_off);
     if (!host_info) {
         ctx->sp += 8; /* Clean up 4 parameters of 2 bytes each */
         return 87;
     }
 
-    APIRET rc = os2_KbdCharIn(host_info, fWait, (HKBD)hkbd);
+    rc = os2_KbdCharIn(host_info, fWait, (HKBD)hkbd);
     
     ctx->sp += 8; /* Pascal convention callee stack cleanup */
     return (uint16_t)rc;
@@ -76,17 +82,32 @@ uint16_t os2_Kbd16CharIn(CPU286_Context* ctx) {
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
+        HMODULE hCore;
+        PFN_wineos2_register_callgate pfnRegister;
+
         DisableThreadLibraryCalls(hinstDLL);
+
+        /* Dynamically look up the master engine core executable image */
+        hCore = GetModuleHandleA(NULL);
+        if (!hCore) return FALSE;
+
+        pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
+        if (!pfnRegister) {
+            printf("[KBDCALLS] Error: Could not resolve wineos2_register_callgate dynamically.\n");
+            fflush(stdout);
+            return FALSE;
+        }
 
         /* 
          * Registers its own historical 16-bit execution Call Gate 
          * inside the centralized master wineos2 LDT structure.
          * Ordinal 4 maps to KbdCharIn under standard IBM specification rules.
          */
-        wineos2_register_callgate("KBDCALLS", 4, os2_Kbd16CharIn);
+        pfnRegister("KBDCALLS", 4, os2_Kbd16CharIn);
 
-        printf("[Kbdcalls] Autonomous 16-bit Callgate registration completed via wineos2 engine.\n");
+        printf("[Kbdcalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
     }
     return TRUE;
 }
+
