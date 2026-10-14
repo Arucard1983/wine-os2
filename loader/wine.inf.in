@@ -92,7 +92,7 @@ Needs=BaseInstall
 WineFakeDlls=FakeDllsWin32
 AddReg=\
     VCRuntime.ntx86,\
-    VersionInfo,\
+    VersionInfo
     
 [DefaultInstall.ntarm]
 Needs=BaseInstall
@@ -1367,7 +1367,9 @@ CopyFiles = \
     SortFiles, \
     WinmdFiles, \
     OS2SubsystemFiles, \   
-    OS2ProgramFiles        
+    OS2ProgramFiles
+AddReg=\
+    WineOS2Registry
 
 [DestinationDirs]
 ColorFiles        = 23
@@ -1376,8 +1378,8 @@ InfFiles          = 17
 NlsFiles          = 11
 SortFiles         = 10,globalization\sorting
 WinmdFiles        = 11,winmetadata
-OS2SubsystemFiles = 24,OS2
-OS2ProgramFiles   = 24,OS2
+OS2SubsystemFiles = 30,OS2
+OS2ProgramFiles   = 30,OS2
 
 [OS2SubsystemFiles]
 doscalls.dll
@@ -1389,22 +1391,33 @@ viocalls.dll
 wineos2.exe
 pmshell.exe
 
+[SourceDisksFiles]
+;; =========================================================================
+;; WINEOS2 SOURCE BINARIES (Mapeamento para compilação/instalação)
+;; =========================================================================
+doscalls.dll = 1
+kbdcalls.dll = 1
+moucalls.dll = 1
+viocalls.dll = 1
+wineos2.exe  = 1
+pmshell.exe  = 1
+
+
 ;; =========================================================================
 ;; WINEOS2 SYSTEM REGISTRY HIVE INITIALIZATION (NT-Style Environment)
 ;; =========================================================================
 [WineOS2Registry]
 ;; HKCU maps to HKEY_CURRENT_USER for user-specific PM structures
-HKCU,"Software\Wine\WineOS2\OS2.INI",,0x00000010
+HKCU,"Software\Wine\WineOS2\OS2.INI",,0x00000012
 
 ;; HKLM maps to HKEY_LOCAL_MACHINE for global virtual machine subsystem variables
-HKLM,"Software\Wine\WineOS2\OS2SYS.INI",,0x00000010
+HKLM,"Software\Wine\WineOS2\OS2SYS.INI",,0x00000012
 
-;; Injects the strict NT-Style subsystem environment parameters (Sem aspas literais)
 HKLM,"Software\Wine\WineOS2\Environment","PATH",0x00020000,"C:\OS2;C:\OS2\SYSTEM;%PATH%"
-HKLM,"Software\Wine\WineOS2\Environment","DPATH",0x00000000,"C:\OS2;C:\OS2\SYSTEM"
-HKLM,"Software\Wine\WineOS2\Environment","LIBPATH",0x00000000,".;C:\OS2\DLL;C:\OS2\SYSTEM"
+HKLM,"Software\Wine\WineOS2\Environment","DPATH",0x00000002,"C:\OS2;C:\OS2\SYSTEM"
+HKLM,"Software\Wine\WineOS2\Environment","LIBPATH",0x00000002,".;C:\OS2\DLL;C:\OS2\SYSTEM"
 HKLM,"Software\Wine\WineOS2\Environment","COMSPEC",0x00020000,"%SystemRoot%\system32\cmd.exe"
-HKLM,"Software\Wine\WineOS2\Environment","WINEOS2_HOST_ROOT",0x00000000,"/opt/wineos2"
+HKLM,"Software\Wine\WineOS2\Environment","WINEOS2_HOST_ROOT",0x00000002,"/opt/wineos2"
 
-;; Injects the historical shell booting configuration parameters (Sem aspas literais)
-HKLM,"Software\Wine\WineOS2\ConfigSys","PROTSHELL",0x00000000,"C:\OS2\PMSHELL.EXE C:\OS2\OS2.INI C:\OS2\OS2SYS.INI %SystemRoot%\system32\cmd.exe"
+;; Injects the historical shell booting configuration parameters
+HKLM,"Software\Wine\WineOS2\ConfigSys","PROTSHELL",0x00020000,"C:\OS2\PMSHELL.EXE C:\OS2\OS2.INI C:\OS2\OS2SYS.INI %SystemRoot%\system32\cmd.exe"
