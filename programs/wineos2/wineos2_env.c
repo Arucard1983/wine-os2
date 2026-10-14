@@ -61,7 +61,8 @@ int wineos2_setup_lx_environment(uint32_t* out_pib_ptr) {
     fflush(stdout);
 
     /* Return standard simulated mock PIB base address allocation */
-    *out_pib_ptr = 0x00020000; 
+     void* safe_pib = VirtualAlloc(NULL, sizeof(OS2_PIB), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+     *out_pib_ptr = (uint32_t)(uintptr_t)safe_pib;
     return 1;
 }
 
