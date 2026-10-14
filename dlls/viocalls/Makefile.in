@@ -1,7 +1,10 @@
 MODULE    = viocalls.dll
 IMPORTLIB = viocalls
 
-IMPORTS   = ntdll
+IMPORTS   = kernel32 user32 ntdll
 
 C_SRCS = \
+	viocalls_main.c
+
+SOURCES = \
 	viocalls_main.c

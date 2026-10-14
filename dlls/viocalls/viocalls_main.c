@@ -11,8 +11,8 @@
 #include "os2types.h"
 #include "wineos2_286cpu.h"
 
-/* Import dynamic registration routine from the master wineos2.exe core engine */
-uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
+/* Define the function pointer type for the callgate registration routine */
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
 
 /* =========================================================================
  * 32-BIT NATIVE CORES (LX Subsystem - Routes directly to Win32 Console API)
@@ -36,20 +36,26 @@ APIRET CDECL os2_VioWrtTTY(PCH pchString, ULONG cbString, HVIO hvio) {
 
 uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4; /* Skip 4 bytes of Far CS:IP return address */
+    uint16_t cbString;
+    uint16_t pStr_sel;
+    uint16_t pStr_off;
+    uint16_t hvia_val;
+    char* host_string;
+    APIRET rc;
     
     /* Pascal order: Unpacking parameters from highest stack coordinate to lowest */
-    uint16_t cbString  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t pStr_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t hvio      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    cbString  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    pStr_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    hvia_val  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
 
-    char* host_string = (char*)mode16to32(pStr_sel, pStr_off);
+    host_string = (char*)mode16to32(pStr_sel, pStr_off);
     if (!host_string) {
         ctx->sp += 8; /* Clean up 4 parameters of 2 bytes each */
         return 87; /* ERROR_INVALID_PARAMETER */
     }
 
-    APIRET rc = os2_VioWrtTTY(host_string, (ULONG)cbString, (HVIO)hvio);
+    rc = os2_VioWrtTTY(host_string, (ULONG)cbString, (HVIO)hvia_val);
     
     ctx->sp += 8; /* Pascal convention callee stack cleanup */
     return (uint16_t)rc;
@@ -61,17 +67,32 @@ uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
+        HMODULE hCore;
+        PFN_wineos2_register_callgate pfnRegister;
+
         DisableThreadLibraryCalls(hinstDLL);
+
+        /* Dynamically look up the master engine core executable image */
+        hCore = GetModuleHandleA(NULL);
+        if (!hCore) return FALSE;
+
+        pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
+        if (!pfnRegister) {
+            printf("[VIOCALLS] Error: Could not resolve wineos2_register_callgate dynamically.\n");
+            fflush(stdout);
+            return FALSE;
+        }
 
         /* 
          * Registers its own historical 16-bit execution Call Gate 
          * inside the centralized master wineos2 LDT structure.
          * Ordinal 5 maps to VioWrtTTY under standard IBM specification rules.
          */
-        wineos2_register_callgate("VIOCALLS", 5, os2_Vio16WrtTTY);
+        pfnRegister("VIOCALLS", 5, os2_Vio16WrtTTY);
 
-        printf("[Viocalls] Autonomous 16-bit Callgate registration completed via wineos2 engine.\n");
+        printf("[Viocalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
     }
     return TRUE;
 }
+
