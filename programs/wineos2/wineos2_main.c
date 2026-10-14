@@ -141,7 +141,6 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
     LX_ALLOCATED_OBJECT allocated_objects[MAX_LX_OBJECTS];
     uint32_t target_entry_eip = 0;
     uint32_t target_entry_esp = 0;
-    uint32_t active_pib_address = 0;
     uint32_t absolute_obj_table;
     uint32_t i;
 
