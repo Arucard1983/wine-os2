@@ -13,232 +13,185 @@
 #include "os2types.h"
 
 #pragma pack(push, 1)
-
-/* LX Page Map Entry Descriptor */
 typedef struct {
-    uint32_t page_data_offset; /* File offset to the page data relative to data base */
-    uint16_t data_size;        /* Size of data in the file (if compressed/packed) */
-    uint16_t flags;            /* Page attributes */
+    uint32_t page_data_offset; 
+    uint16_t data_size;        
+    uint16_t flags;            
 } LX_PAGE_ENTRY;
 
-/* Simplified LX Import Module and Fixup Record structures for parsing */
 typedef struct {
-    uint8_t  src_type;         /* Fixup source type (e.g., 0x07 = 32-bit Flat Pointer) */
-    uint8_t  flags;            /* Fixup attributes (e.g., 0x10 = Import by Ordinal) */
-    uint16_t src_offset;       /* Target offset within the object to be patched */
-    uint16_t module_index;     /* 1-based index into the Import Module Name Table */
-    uint32_t ordinal;          /* The targeted OS/2 API Ordinal number */
+    uint8_t  src_type;         
+    uint8_t  flags;            
+    uint16_t src_offset;       
+    uint16_t module_index;     
+    uint32_t ordinal;          
 } LX_FIXUP_RECORD;
 
+typedef struct {
+    uint8_t  magic[2];     
+    uint8_t  border;         
+    uint8_t  worder;         
+    uint32_t level;          
+    uint16_t cpu_type;       
+    uint16_t os_type;        
+    uint32_t version;        
+    uint32_t flags;          
+    uint32_t num_pages;      
+    uint32_t eip_obj;        
+    uint32_t eip;            
+    uint32_t esp_obj;        
+    uint32_t esp;            
+    uint32_t page_size;      
+    uint32_t pages_shift;    
+    uint32_t fixup_sec_size; 
+    uint32_t fixup_sec_chk;  
+    uint32_t loader_sec_size;
+    uint32_t loader_sec_chk; 
+    uint32_t obj_tbl_offset; 
+    uint32_t num_objects;    
+    uint32_t obj_map_offset; 
+} LX_HEADER_INTERNAL;
+
+typedef struct {
+    void* host_address;   
+    uint32_t base_addr;   
+    uint32_t size;        
+} LX_ALLOCATED_OBJECT_INTERNAL;
+
+typedef struct {
+    uint32_t size;           
+    uint32_t base_addr;      
+    uint32_t flags;          
+    uint32_t page_tbl_idx;   
+    uint32_t num_pages;      
+    uint32_t reserved;
+} LX_OBJECT_INTERNAL;
 #pragma pack(pop)
 
 #define LX_PAGE_UNCOMPRESSED 0x0000
 #define LX_PAGE_COMPRESSED   0x0001
 #define LX_PAGE_ZEROFILL     0x0003
-#define MAX_LX_OBJECTS 64
 
-typedef struct {
-    void* host_address;   /* Native host adress (Wine) */
-    uint32_t base_addr;   /* Virtual OS/2 adress (32-bit) */
-    uint32_t size;        /* Real allocatable size */
-} LX_ALLOCATED_OBJECT;
+static void lx_resolve_module_name(FILE* file, uint32_t ne_base, LX_HEADER_INTERNAL* lx_hdr, uint32_t module_index, char* out_name) {
+    uint32_t table_offset;
+    uint32_t current_idx = 1;
+    uint8_t len = 0;
 
-/* 
- * Scans the official LX Import Module Name Table to extract the DLL string dynamically.
- * module_index is 1-based as mandated by the IBM Linear Executable specification.
- */
-static void lx_resolve_module_name(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr, uint32_t module_index, char* out_name) {
     if (!file || !lx_hdr || module_index == 0 || !out_name) {
-        strcpy(out_name, "DOSCALLS"); /* Failsafe fallback */
+        strcpy(out_name, "DOSCALLS"); 
         return;
     }
 
-    /* 
-     * TRAP FIX: In the LX specification, the offset to the Import Module Name Table 
-     * is defined by a specific header field (typically linked near the import tables).
-     * We ensure the file descriptor points directly to the start of this table.
-     */
-    uint32_t table_offset = ne_base + lx_hdr->obj_map_offset; 
-    
+    table_offset = ne_base + lx_hdr->obj_map_offset; 
     if (fseek(file, table_offset, SEEK_SET) != 0) {
         strcpy(out_name, "DOSCALLS");
         return;
     }
     
-    uint32_t current_idx = 1;
-    uint8_t len = 0;
-
-    /* 
-     * TRAP FIX: Replaced the incorrect 'num_objects' structural bound check.
-     * The loop now scans sequentially until the 1-based target module_index is matched,
-     * or a hard technical safety ceiling (e.g., 256 imports) is reached to prevent infinite loops.
-     */
     while (current_idx <= 256) {
-        if (fread(&len, sizeof(uint8_t), 1, file) != 1) break;
-        
-        /* A length byte of 0 indicates the structural end of the Pascal String table */
-        if (len == 0) break;
+        if (fread(&len, sizeof(uint8_t), 1, file) != 1 || len == 0) break;
 
         if (current_idx == module_index) {
-            /* Guard buffer bounds to prevent buffer overflows on out_name (typically 128/256 bytes) */
             uint8_t read_len = (len > 127) ? 127 : len;
-            
             if (fread(out_name, 1, read_len, file) == read_len) {
                 out_name[read_len] = '\0';
-                
-                /* Skip any remaining unread bytes if the string was clamped by safety limits */
-                if (len > read_len) {
-                    fseek(file, len - read_len, SEEK_CUR);
-                }
+                if (len > read_len) fseek(file, len - read_len, SEEK_CUR);
                 return;
             }
             break;
         }
-
-        /* Skip the characters of the current non-matching string to advance to the next record */
         fseek(file, len, SEEK_CUR);
         current_idx++;
     }
-
-    /* Architectural fallback routing if the requested module index is out of bounds */
     strcpy(out_name, "DOSCALLS");
 }
 
+int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER_INTERNAL* lx_hdr, LX_ALLOCATED_OBJECT_INTERNAL* allocated_objects) {
+    uint32_t fixup_table_pos, fixup_size, bytes_processed = 0;
 
-
-/* 
- * Scans and applies the authentic 32-bit flat dynamic relocations, 
- * linking them directly to the native Wine subsystem DLL thunks. 
- * Eliminates all raw stubs or stack-allocated hooks.
- */
-int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, LX_HEADER* lx_hdr, LX_ALLOCATED_OBJECT* allocated_objects) {
     if (!file || !lx_hdr || !allocated_objects) return 0;
 
-    /* Extract the absolute file alignment coordinate for the Fixup Table */
-    uint32_t fixup_table_pos = ne_base + lx_hdr->fixup_sec_chk; 
-    uint32_t fixup_size = lx_hdr->fixup_sec_size;
+    fixup_table_pos = ne_base + lx_hdr->fixup_sec_chk; 
+    fixup_size = lx_hdr->fixup_sec_size;
 
-    if (fixup_size == 0) {
-        printf("[LX Linker] No fixup records defined inside this module.\n");
-        return 1;
-    }
-
-    printf("[LX Linker] Processing 32-bit Fixup Tables via absolute dynamic Ordinal resolution...\n");
-
+    if (fixup_size == 0) return 1;
     if (fseek(file, fixup_table_pos, SEEK_SET) != 0) return 0;
 
-    uint32_t bytes_processed = 0;
-
-    /* Walk structurally through the Fixup Stream until the section bounds are satisfied */
     while (bytes_processed < fixup_size) {
-        uint8_t src_type = 0;
-        uint8_t flags = 0;
+        uint8_t src_type = 0, flags = 0;
 
         if (fread(&src_type, sizeof(uint8_t), 1, file) != 1) break;
         if (fread(&flags, sizeof(uint8_t), 1, file) != 1) break;
         bytes_processed += 2;
 
-        /* 
-         * IBM LX Specification: 
-         * src_type 0x07 = 32-bit Flat Pointer Target (Standard API call target)
-         * flags bit 0x10 = Import by Ordinal (Standard OS/2 System call structures)
-         */
         if ((src_type == 0x07) && (flags & 0x10)) {
-            uint16_t src_offset = 0;
-            uint16_t module_index = 0;
+            uint16_t src_offset = 0, module_index = 0;
             uint32_t target_ordinal = 0;
+            uint8_t ordinal_size;
+            char target_module[128], dll_filename[256];
+            HMODULE hModule;
 
             if (fread(&src_offset, sizeof(uint16_t), 1, file) != 1) break;
             if (fread(&module_index, sizeof(uint16_t), 1, file) != 1) break;
             bytes_processed += 4;
 
-            /* Check if the ordinal field size is defined as an 8-bit, 16-bit, or 32-bit index descriptor */
-            uint8_t ordinal_size = (flags & 0x03); 
+            ordinal_size = (flags & 0x03); 
             if (ordinal_size == 1) {
                 uint8_t ord8 = 0;
                 if (fread(&ord8, 1, 1, file) != 1) break;
                 target_ordinal = ord8;
                 bytes_processed += 1;
-            }
-            else if (ordinal_size == 2) {
+            } else if (ordinal_size == 2) {
                 uint16_t ord16 = 0;
                 if (fread(&ord16, 2, 1, file) != 1) break;
                 target_ordinal = ord16;
                 bytes_processed += 2;
-            }
-            else {
+            } else {
                 if (fread(&target_ordinal, 4, 1, file) != 1) break;
                 bytes_processed += 4;
             }
 
-            /* Resolve the module target string name dynamically directly out of the LX header fields */
-            char target_module[128];
             lx_resolve_module_name(file, ne_base, lx_hdr, module_index, target_module);
-
-            char dll_filename[256];
             snprintf(dll_filename, sizeof(dll_filename), "%s.dll", target_module);
 
-            /* Load or fetch the handle of the corresponding Wine Subsystem DLL thunk */
-            HMODULE hModule = GetModuleHandleA(dll_filename);
-            if (!hModule) {
-                hModule = LoadLibraryA(dll_filename);
-            }
+            hModule = GetModuleHandleA(dll_filename);
+            if (!hModule) hModule = LoadLibraryA(dll_filename);
 
             if (hModule) {
                 FARPROC target_api_thunk = GetProcAddress(hModule, (LPCSTR)(uintptr_t)target_ordinal);
-                
                 if (target_api_thunk) {
-                    /* =========================================================================
-                     * TRAP FIX: Dynamic search to identify which object target handles the offset
-                     * ========================================================================= */
                     void* target_patch_address = NULL;
+                    uint32_t obj_idx;
                     
-                    /* Scan the allocated memory segments to find where the virtual target maps */
-                    for (uint32_t obj_idx = 0; obj_idx < lx_hdr->num_objects; obj_idx++) {
+                    for (obj_idx = 0; obj_idx < lx_hdr->num_objects; obj_idx++) {
                         uint32_t start_range = allocated_objects[obj_idx].base_addr;
                         uint32_t end_range = start_range + allocated_objects[obj_idx].size;
-                        
-                        /* Verify if the target relative src_offset lands inside this memory object */
                         if (src_offset >= start_range && src_offset < end_range) {
-                            uint32_t offset_inside_obj = src_offset - start_range;
-                            target_patch_address = (uint8_t*)allocated_objects[obj_idx].host_address + offset_inside_obj;
+                            target_patch_address = (uint8_t*)allocated_objects[obj_idx].host_address + (src_offset - start_range);
                             break;
                         }
                     }
 
-                    /* Fallback to Object #0 (Typically Code/Text segment) if implicit range check fails */
                     if (!target_patch_address && allocated_objects[0].host_address) {
                         target_patch_address = (uint8_t*)allocated_objects[0].host_address + src_offset;
                     }
 
-                    uint32_t* patch_ptr = (uint32_t*)target_patch_address;
-                    
-                    /* Enforce strict memory write protection validation before hotpatching runtime instructions */
-                    if (patch_ptr && !IsBadWritePtr(patch_ptr, sizeof(uint32_t))) {
+                    if (target_patch_address && !IsBadWritePtr(target_patch_address, sizeof(uint32_t))) {
                         DWORD old_protect;
-                        VirtualProtect(patch_ptr, sizeof(uint32_t), PAGE_READWRITE, &old_protect);
-                        *patch_ptr = (uint32_t)(uintptr_t)target_api_thunk;
-                        VirtualProtect(patch_ptr, sizeof(uint32_t), old_protect, &old_protect);
+                        VirtualProtect(target_patch_address, sizeof(uint32_t), PAGE_READWRITE, &old_protect);
+                        *(uint32_t*)target_patch_address = (uint32_t)(uintptr_t)target_api_thunk;
+                        VirtualProtect(target_patch_address, sizeof(uint32_t), old_protect, &old_protect);
                     }
                 }
             }
-        }
-        else {
-            /* 
-             * Safely skip minor or internal relocations (local references) based on LX specifications.
-             * Advances the file descriptor stream window under strict layout stepping boundaries.
-             */
+        } else {
             fseek(file, 2, SEEK_CUR);
             bytes_processed += 2;
         }
     }
-
-    printf("[LX Linker] Dynamic Fixup Table linking step completed successfully.\n");
     return 1;
 }
 
-
-/* Simplified decompression core shortcut mapping */
 static int lx_decompress_page(const uint8_t* src, uint32_t src_len, uint8_t* dest, uint32_t dest_len) {
     if (src_len == dest_len) {
         memcpy(dest, src, dest_len);
@@ -249,25 +202,26 @@ static int lx_decompress_page(const uint8_t* src, uint32_t src_len, uint8_t* des
     return 1;
 }
 
-/* Maps individual page blocks of an LX memory object from disk into target virtual space */
-int lx_process_object_pages(FILE* file, uint32_t ne_base, LX_HEADER* hdr, LX_OBJECT* obj, void* target_allocated_addr) {
+int lx_process_object_pages(FILE* file, uint32_t ne_base, LX_HEADER_INTERNAL* hdr, LX_OBJECT_INTERNAL* obj, void* target_allocated_addr) {
+    uint32_t page_size, page_map_offset, start_page_idx, total_pages, i;
+    uint8_t *dest_ptr, *file_page_buffer;
+
     if (!file || !hdr || !obj || !target_allocated_addr) return 0;
 
-    uint32_t page_size = hdr->page_size ? hdr->page_size : 4096;
-    uint32_t page_map_offset = ne_base + hdr->obj_map_offset;
-    uint32_t start_page_idx = obj->page_tbl_idx - 1; 
-    uint32_t total_pages = obj->num_pages;
+    page_size = hdr->page_size ? hdr->page_size : 4096;
+    page_map_offset = ne_base + hdr->obj_map_offset;
+    start_page_idx = obj->page_tbl_idx - 1; 
+    total_pages = obj->num_pages;
 
-    printf("[LX Paging] Mapping Object: Base=0x%08X, Size=%u, Total Pages=%u\n", 
-           obj->base_addr, obj->size, total_pages);
-
-    uint8_t* dest_ptr = (uint8_t*)target_allocated_addr;
-    uint8_t* file_page_buffer = (uint8_t*)malloc(page_size);
+    dest_ptr = (uint8_t*)target_allocated_addr;
+    file_page_buffer = (uint8_t*)malloc(page_size);
     if (!file_page_buffer) return 0;
 
-    for (uint32_t i = 0; i < total_pages; i++) {
+    for (i = 0; i < total_pages; i++) {
         LX_PAGE_ENTRY page_entry;
         uint32_t entry_file_pos = page_map_offset + ((start_page_idx + i) * sizeof(LX_PAGE_ENTRY));
+        uint8_t page_type;
+        uint32_t current_page_dest_limit = page_size;
 
         fseek(file, entry_file_pos, SEEK_SET);
         if (fread(&page_entry, sizeof(LX_PAGE_ENTRY), 1, file) != 1) {
@@ -275,24 +229,20 @@ int lx_process_object_pages(FILE* file, uint32_t ne_base, LX_HEADER* hdr, LX_OBJ
             return 0;
         }
 
-        uint8_t page_type = page_entry.flags & 0x000F;
-        uint32_t current_page_dest_limit = page_size;
-
+        page_type = page_entry.flags & 0x000F;
         if ((i * page_size) + page_size > obj->size) {
             current_page_dest_limit = obj->size - (i * page_size);
         }
 
         switch (page_type) {
             case LX_PAGE_UNCOMPRESSED: {
-                uint32_t raw_data_pos = ne_base + (page_entry.page_data_offset << hdr->pages_shift);
-                fseek(file, raw_data_pos, SEEK_SET);
+                fseek(file, ne_base + (page_entry.page_data_offset << hdr->pages_shift), SEEK_SET);
                 memset(dest_ptr, 0, current_page_dest_limit);
                 fread(dest_ptr, 1, current_page_dest_limit, file);
                 break;
             }
             case LX_PAGE_COMPRESSED: {
-                uint32_t compressed_data_pos = ne_base + (page_entry.page_data_offset << hdr->pages_shift);
-                fseek(file, compressed_data_pos, SEEK_SET);
+                fseek(file, ne_base + (page_entry.page_data_offset << hdr->pages_shift), SEEK_SET);
                 fread(file_page_buffer, 1, page_entry.data_size, file);
                 lx_decompress_page(file_page_buffer, page_entry.data_size, dest_ptr, current_page_dest_limit);
                 break;
