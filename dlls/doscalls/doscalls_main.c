@@ -6,26 +6,17 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winternl.h> 
+#include <ntstatus.h> /* Standard header for STATUS_SUCCESS and STATUS_PENDING */
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "os2types.h"
 #include "wineos2_286cpu.h"
 
-/* Import dynamic registration routine from the master wineos2.exe core engine */
-uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
+/* Define the function pointer type for the callgate registration routine */
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
 
-/* Import explicit NTDLL functions from the Wine/NT environment */
-NTSYSAPI NTSTATUS NTAPI NtWriteFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
-                                    PVOID apc_context, PIO_STATUS_BLOCK io_status, 
-                                    PVOID buffer, ULONG length, PLARGE_INTEGER offset, 
-                                    PULONG key);
-
-NTSYSAPI NTSTATUS NTAPI NtReadFile(HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, 
-                                   PVOID apc_context, PIO_STATUS_BLOCK io_status, 
-                                   PVOID buffer, ULONG length, PLARGE_INTEGER offset, 
-                                   PULONG key);
-
+/* Manual redeclarations of NTDLL functions */
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE handle, NTSTATUS exit_status);
 
 /* Helper to map standard OS/2 console handles to NT native handles */
@@ -99,10 +90,12 @@ APIRET CDECL os2_DosExit(ULONG action, ULONG result) {
 
 uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4; /* Skip 4 bytes of Far CS:IP return address */
+    uint16_t result_code;
+    uint16_t action_flags;
     
     /* Pascal order: Action Flags (Left) is at higher address, Result Code (Right) is at lower */
-    uint16_t result_code  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
-    uint16_t action_flags = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    result_code  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    action_flags = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
 
     os2_DosExit((ULONG)action_flags, (ULONG)result_code);
     return 0;
@@ -110,6 +103,7 @@ uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
 
 uint16_t os2_Dos16Write(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
+    ULONG bytes_written = 0; /* C90 Fix: Moved declaration to top of execution block */
     
     /* Fixed Pascal layout unpacking from highest address to lowest */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
@@ -121,15 +115,14 @@ uint16_t os2_Dos16Write(CPU286_Context* ctx) {
 
     char* host_buffer     = (char*)mode16to32(pBuf_sel, pBuf_off);
     uint16_t* host_actual = (uint16_t*)mode16to32(pAct_sel, pAct_off);
+    APIRET rc;
 
     if (!host_buffer || !host_actual) {
         ctx->sp += 12;
         return 87; /* ERROR_INVALID_PARAMETER */
     }
 
-    ULONG bytes_written = 0;
-    APIRET rc = os2_DosWrite((ULONG)hFile, host_buffer, (ULONG)cbWrite, &bytes_written);
-    
+    rc = os2_DosWrite((ULONG)hFile, host_buffer, (ULONG)cbWrite, &bytes_written);
     *host_actual = (uint16_t)bytes_written;
 
     ctx->sp += 12; /* Safely clear the 12 bytes of parameters */
@@ -138,6 +131,7 @@ uint16_t os2_Dos16Write(CPU286_Context* ctx) {
 
 uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
+    ULONG bytes_read = 0; /* C90 Fix: Moved declaration to top of execution block */
     
     /* Fixed Pascal layout unpacking for Dos16Read */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
@@ -149,15 +143,14 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
 
     uint8_t* host_buffer = (uint8_t*)mode16to32(pBuf_sel, pBuf_off);
     uint16_t* host_read  = (uint16_t*)mode16to32(pRead_sel, pRead_off);
+    APIRET rc;
 
     if (!host_buffer || !host_read) {
         ctx->sp += 12;
         return 87;
     }
 
-    ULONG bytes_read = 0;
-    APIRET rc = os2_DosRead((ULONG)hFile, host_buffer, (ULONG)cbRead, &bytes_read);
-    
+    rc = os2_DosRead((ULONG)hFile, host_buffer, (ULONG)cbRead, &bytes_read);
     *host_read = (uint16_t)bytes_read;
 
     ctx->sp += 12; 
@@ -170,19 +163,30 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
-        /* Disable unnecessary thread injection logs to optimize execution speeds */
+        HMODULE hCore;
+        PFN_wineos2_register_callgate pfnRegister;
+
         DisableThreadLibraryCalls(hinstDLL);
 
-        /* 
-         * The subsystem autonomously hooks its own historical 16-bit 
-         * execution call gates inside the centralized master wineos2 LDT structure.
-         */
-        wineos2_register_callgate("DOSCALLS", 5,   os2_Dos16Exit);
-        wineos2_register_callgate("DOSCALLS", 137, os2_Dos16Read);
-        wineos2_register_callgate("DOSCALLS", 138, os2_Dos16Write);
+        /* Dynamically look up the master engine core executable/DLL entry */
+        hCore = GetModuleHandleA(NULL); /* NULL resolves to the host process image, wineos2.exe */
+        if (!hCore) return FALSE;
 
-        printf("[Doscalls] Autonomous 16-bit Callgate registration completed via wineos2 engine.\n");
+        pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
+        if (!pfnRegister) {
+            printf("[DOSCALLS] Error: Could not resolve wineos2_register_callgate dynamically.\n");
+            fflush(stdout);
+            return FALSE;
+        }
+
+        /* Register the 16-bit historical hooks into the master core LDT structures */
+        pfnRegister("DOSCALLS", 5,   os2_Dos16Exit);
+        pfnRegister("DOSCALLS", 137, os2_Dos16Read);
+        pfnRegister("DOSCALLS", 138, os2_Dos16Write);
+
+        printf("[Doscalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
     }
     return TRUE;
 }
+

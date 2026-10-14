@@ -6,3 +6,6 @@ IMPORTS   = ntdll
 
 C_SRCS = \
 	doscalls_main.c
+
+SOURCES = \
+	doscalls_main.c
