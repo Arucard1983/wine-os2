@@ -85,15 +85,16 @@ APIRET CDECL os2_DosExit(ULONG action, ULONG result) {
 }
 
 /* =========================================================================
- * 16-BIT EMULATED CORES (NE Subsystem - Corrected Stack Offsets)
+ * 16-BIT EMULATED CORES (NE Subsystem - Stack Preservation Fix)
  * ========================================================================= */
 
 uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4; /* Skip 4 bytes of Far CS:IP return address */
+    /* The emulator pushed CS:IP (4 bytes) before invoking this thunk context */
+    uint16_t sp_offset = ctx->sp + 4; 
     uint16_t result_code;
     uint16_t action_flags;
     
-    /* Pascal order: Action Flags (Left) is at higher address, Result Code (Right) is at lower */
+    /* Pascal ordering optimization framework target parsing */
     result_code  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
     action_flags = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
 
@@ -102,10 +103,10 @@ uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Dos16Write(CPU286_Context* ctx) {
+    /* Safe offset bounding: Parameters sit exactly 4 bytes below the hidden CS:IP frame */
     uint16_t sp_offset = ctx->sp + 4;
-    ULONG bytes_written = 0; /* C90 Fix: Moved declaration to top of execution block */
+    ULONG bytes_written = 0; 
     
-    /* Fixed Pascal layout unpacking from highest address to lowest */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -118,22 +119,20 @@ uint16_t os2_Dos16Write(CPU286_Context* ctx) {
     APIRET rc;
 
     if (!host_buffer || !host_actual) {
-        ctx->sp += 12;
-        return 87; /* ERROR_INVALID_PARAMETER */
+        return 87; /* ERROR_INVALID_PARAMETER - Do not touch SP inside the C bridge */
     }
 
     rc = os2_DosWrite((ULONG)hFile, host_buffer, (ULONG)cbWrite, &bytes_written);
     *host_actual = (uint16_t)bytes_written;
 
-    ctx->sp += 12; /* Safely clear the 12 bytes of parameters */
+    /* REMOVED: Stack balancing is now delegated entirely to the interpreter engine */
     return (uint16_t)rc;
 }
 
 uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
-    ULONG bytes_read = 0; /* C90 Fix: Moved declaration to top of execution block */
+    ULONG bytes_read = 0; 
     
-    /* Fixed Pascal layout unpacking for Dos16Read */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -146,16 +145,16 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     APIRET rc;
 
     if (!host_buffer || !host_read) {
-        ctx->sp += 12;
         return 87;
     }
 
     rc = os2_DosRead((ULONG)hFile, host_buffer, (ULONG)cbRead, &bytes_read);
     *host_read = (uint16_t)bytes_read;
 
-    ctx->sp += 12; 
+    /* REMOVED: Preventing hardware emulation stack state desynchronization */
     return (uint16_t)rc;
 }
+
 
 /* =========================================================================
  * SUBSYSTEM INITIALIZATION - AUTONOMOUS BOOTSTRAP PIPELINE

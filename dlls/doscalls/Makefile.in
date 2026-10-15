@@ -4,6 +4,8 @@ IMPORTLIB = doscalls
 # Link against the native Wine/NT low-level kernel services
 IMPORTS   = ntdll
 
+ENABLE_ARCHS = i386
+
 C_SRCS = \
 	doscalls_main.c
 
