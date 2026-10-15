@@ -4,6 +4,8 @@ IMPORTLIB = kbdcalls
 # Link against standard Wine low-level kernel abstractions
 IMPORTS   = kernel32 user32 ntdll
 
+ENABLE_ARCHS = i386
+
 C_SRCS = \
 	kbdcalls_main.c
 
