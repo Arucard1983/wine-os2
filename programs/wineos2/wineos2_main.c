@@ -111,6 +111,20 @@ typedef struct {
     uint32_t size;
 } LX_ALLOCATED_OBJECT;
 
+/* OS/2 1.x / Win16 NE Segment Relocation Entry Descriptor */
+typedef struct {
+    uint8_t  source_type;   /* 1 = LOBYTE, 2 = SEGMENT, 3 = FAR_POINTER (offset+selector) */
+    uint8_t  target_flags;  /* 0 = Internal, 1 = Imported by Ordinal, 2 = Imported by Name */
+    uint16_t source_offset; /* Offset location inside the segment data to apply the patch */
+    
+    union {
+        struct {
+            uint16_t module_index; /* Index inside the Module Reference Table */
+            uint16_t ordinal;      /* Function Ordinal number  */
+        } imported_ordinal;
+    } target;
+} NE_RELOCATION_ENTRY;
+
 #pragma pack(pop)
 
 /* =========================================================================
