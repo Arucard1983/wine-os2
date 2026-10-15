@@ -1,10 +1,13 @@
-MODULE    = moucalls.dll
-IMPORTLIB = moucalls
+MODULE    = kbdcalls.dll
+IMPORTLIB = kbdcalls
 
+# Link against standard Wine low-level kernel abstractions
 IMPORTS   = kernel32 user32 ntdll
 
+ENABLE_ARCHS = i386
+
 C_SRCS = \
-	moucalls_main.c
+	kbdcalls_main.c
 
 SOURCES = \
-	moucalls_main.c
+	kbdcalls_main.c
