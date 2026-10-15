@@ -1,10 +1,13 @@
-MODULE    = viocalls.dll
-IMPORTLIB = viocalls
+MODULE    = kbdcalls.dll
+IMPORTLIB = kbdcalls
 
+# Link against standard Wine low-level kernel abstractions
 IMPORTS   = kernel32 user32 ntdll
 
+ENABLE_ARCHS = i386
+
 C_SRCS = \
-	viocalls_main.c
+	kbdcalls_main.c
 
 SOURCES = \
-	viocalls_main.c
+	kbdcalls_main.c
