@@ -13,8 +13,8 @@
 #include "os2types.h"
 #include "wineos2_286cpu.h"
 
-/* Define the function pointer type for the callgate registration routine */
-typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, void* thunk_ptr);
+/* ENFORCED FIX: Updated function pointer signature to mandate param_bytes for automated stack balancing */
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
 
 /* Manual redeclarations of NTDLL functions */
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE handle, NTSTATUS exit_status);
@@ -49,7 +49,7 @@ APIRET CDECL os2_DosWrite(ULONG hFile, PVOID pBuffer, ULONG cbWrite, PULONG pByt
     }
 
     if (status == STATUS_SUCCESS) {
-        if (pBytesWritten) *pBytesWritten = io_status.Information;
+        if (pBytesWritten) *pBytesWritten = (ULONG)io_status.Information;
         return NO_ERROR;
     }
 
@@ -69,7 +69,7 @@ APIRET CDECL os2_DosRead(ULONG hFile, PVOID pBuffer, ULONG cbRead, PULONG pBytes
     }
 
     if (status == STATUS_SUCCESS) {
-        if (pBytesRead) *pBytesRead = io_status.Information;
+        if (pBytesRead) *pBytesRead = (ULONG)io_status.Information;
         return NO_ERROR;
     }
 
@@ -89,24 +89,24 @@ APIRET CDECL os2_DosExit(ULONG action, ULONG result) {
  * ========================================================================= */
 
 uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
-    /* The emulator pushed CS:IP (4 bytes) before invoking this thunk context */
+    /* Parameters sit exactly 4 bytes above the pushed mock CS:IP return frame */
     uint16_t sp_offset = ctx->sp + 4; 
     uint16_t result_code;
     uint16_t action_flags;
     
-    /* Pascal ordering optimization framework target parsing */
-    result_code  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    /* Pascal Calling Convention: Arguments are passed Left-to-Right */
     action_flags = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    result_code  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
 
     os2_DosExit((ULONG)action_flags, (ULONG)result_code);
     return 0;
 }
 
 uint16_t os2_Dos16Write(CPU286_Context* ctx) {
-    /* Safe offset bounding: Parameters sit exactly 4 bytes below the hidden CS:IP frame */
     uint16_t sp_offset = ctx->sp + 4;
     ULONG bytes_written = 0; 
     
+    /* Pascal Layout Extraction Frame for DosWrite (12 Total Parameter Bytes) */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -119,13 +119,12 @@ uint16_t os2_Dos16Write(CPU286_Context* ctx) {
     APIRET rc;
 
     if (!host_buffer || !host_actual) {
-        return 87; /* ERROR_INVALID_PARAMETER - Do not touch SP inside the C bridge */
+        return 87; /* ERROR_INVALID_PARAMETER */
     }
 
     rc = os2_DosWrite((ULONG)hFile, host_buffer, (ULONG)cbWrite, &bytes_written);
     *host_actual = (uint16_t)bytes_written;
 
-    /* REMOVED: Stack balancing is now delegated entirely to the interpreter engine */
     return (uint16_t)rc;
 }
 
@@ -133,6 +132,7 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
     ULONG bytes_read = 0; 
     
+    /* Pascal Layout Extraction Frame for DosRead (12 Total Parameter Bytes) */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -145,16 +145,14 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     APIRET rc;
 
     if (!host_buffer || !host_read) {
-        return 87;
+        return 87; /* ERROR_INVALID_PARAMETER */
     }
 
     rc = os2_DosRead((ULONG)hFile, host_buffer, (ULONG)cbRead, &bytes_read);
     *host_read = (uint16_t)bytes_read;
 
-    /* REMOVED: Preventing hardware emulation stack state desynchronization */
     return (uint16_t)rc;
 }
-
 
 /* =========================================================================
  * SUBSYSTEM INITIALIZATION - AUTONOMOUS BOOTSTRAP PIPELINE
@@ -178,14 +176,18 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             return FALSE;
         }
 
-        /* Register the 16-bit historical hooks into the master core LDT structures */
-        pfnRegister("DOSCALLS", 5,   os2_Dos16Exit);
-        pfnRegister("DOSCALLS", 137, os2_Dos16Read);
-        pfnRegister("DOSCALLS", 138, os2_Dos16Write);
+        /* 
+         * ENFORCED FIX: Register hooks passing the precise parameter byte footprint size.
+         * DosExit:  2 arguments * 2 bytes = 4 bytes footprint.
+         * DosRead:  4 arguments (16-bit, 32-bit far, 16-bit, 32-bit far) = 2 + 4 + 2 + 4 = 12 bytes footprint.
+         * DosWrite: 4 arguments (16-bit, 32-bit far, 16-bit, 32-bit far) = 2 + 4 + 2 + 4 = 12 bytes footprint.
+         */
+        pfnRegister("DOSCALLS", 5,   4,  os2_Dos16Exit);
+        pfnRegister("DOSCALLS", 137, 12, os2_Dos16Read);
+        pfnRegister("DOSCALLS", 138, 12, os2_Dos16Write);
 
         printf("[Doscalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
     }
     return TRUE;
 }
-
