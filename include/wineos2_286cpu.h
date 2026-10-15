@@ -21,11 +21,12 @@ typedef struct {
     uint8_t  present;    /* Segment presence flag in virtual memory */
     uint8_t  read_write; /* Kept for loader backward compatibility */
     uint8_t  type;       /* LDT_TYPE_SEGMENT or LDT_TYPE_CALLGATE */
+    char     mod_name[MAX_PATH]; /* Track module owner name for CallGates */
+    uint16_t param_bytes;        /* ENFORCED FIX: Total stack bytes consumed by Pascal arguments */
     
     /* Function pointer to the Wine C implementation of the OS/2 API */
     uint16_t (*wine_thunk)(CPU286_Context* ctx); 
 } OS2_LDT_ENTRY;
-
 
 /* Virtualized Local Descriptor Table (Maximum of 8192 selectors) */
 #define LDT_MAX_ENTRIES 8192
@@ -43,7 +44,8 @@ typedef struct {
 #define IS_CF_SET(ctx) (((ctx)->flags & CF_MASK) != 0)
 #define IS_DF_SET(ctx) (((ctx)->flags & DF_MASK) != 0)
 
-static OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
+/* ENFORCED FIX: Prevent static encapsulation across multiple translation units */
+extern OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
 
 /* CPU State Context (Ring 3 execution only) */
 struct struct_CPU286_Context {
@@ -258,14 +260,24 @@ static inline void cpu286_update_logical_flags16(CPU286_Context* ctx, uint32_t r
 /* Expanded Ring 3 Instruction Interpreter Execution Loop Step */
 static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
+
     void* flat_code_ptr = mode16to32(ctx->cs, ctx->ip);
     if (!flat_code_ptr) {
         printf("\n[CRITICAL GPF] Code Fetch Violation! CS:IP = %04X:%04X out of segment limits.\n", ctx->cs, ctx->ip);
-        /* Force exit to prevent a host segmentation fault and provide a clean log */
-        exit(139); /* SIGSEGV standard exit code */
+        exit(139);
     }
-    
+
     uint8_t* code_ptr = (uint8_t*)flat_code_ptr;
+    uint8_t opcode = *code_ptr;
+
+    /* Enforced Fix: Expanded tracking window to capture the post-JAE 0x39B0 execution barrier */
+    if (ctx->ip >= 0x3650 && ctx->ip <= 0x39CE) {
+        printf("[CPU STEP] IP: %04X | Opcode: %02X | SP: %04X | BP: %04X | AX: %04X\n",
+               ctx->ip, opcode, ctx->sp, ctx->bp, ctx->ax);
+        fflush(stdout);
+    }
+
+
     uint8_t prefix = 0;
 
     re_execute:
@@ -274,8 +286,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         printf("GPF(0): Code Fetch Fault at %04X:%04X\n", ctx->cs, ctx->ip);
         return; 
     }
-
-    uint8_t opcode = *code_ptr;
 
     /* Resolve String Repeat Prefix (REP/REPE/REPNE) */
     if (opcode == 0xF3 || opcode == 0xF2) {
@@ -359,20 +369,36 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0xB6: ctx->dh = *code_ptr; ctx->ip++; break; /* MOV DH, ib */
         case 0xB7: ctx->bh = *code_ptr; ctx->ip++; break; /* MOV BH, ib */
 
-        case 0x88: { /* MOV Eb, Gb (Write 8-bit Register to Memory/Register) */
-            uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
-            uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
-            if (dest && src) *dest = *src;
-            break;
-        }
-        case 0x8A: { /* MOV Gb, Eb (Read 8-bit Memory/Register into Register) */
-            uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
-            uint8_t* dest = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-            uint8_t* src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
-            if (dest && src) *dest = *src;
-            break;
-        }
+            /* =========================================================================
+             * 8-BIT DATA MOVEMENT (MODRM COHESION STREAM ALIGNMENT - UPDATE)
+             * ========================================================================= */
+            case 0x88: { /* MOV Eb, Gb (Write 8-bit Register to Memory/Register) */
+                uint8_t modrm = *code_ptr;
+                /* Advance past the ModR/M byte immediately to prevent layout shifts */
+                ctx->ip++;
+                code_ptr++;
+
+                uint8_t mod = (modrm >> 6) & 0x03;
+                uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
+                uint8_t* dest = (mod == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+                if (dest && src) *dest = *src;
+                break;
+            }
+
+            case 0x8A: { /* MOV Gb, Eb (Read 8-bit Memory/Register into Register) */
+                uint8_t modrm = *code_ptr;
+                ctx->ip++;
+                code_ptr++;
+
+                uint8_t mod = (modrm >> 6) & 0x03;
+                uint8_t* dest = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
+                uint8_t* src = (mod == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+                if (dest && src) *dest = *src;
+                break;
+            }
+
 
 
         /* =========================================================================
@@ -551,7 +577,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         }
 
 
-        case 0x9A: { /* CALL far ptr16:16 */
+                case 0x9A: { /* CALL far ptr16:16 */
             uint16_t target_offset = *(uint16_t*)code_ptr;
             uint16_t target_selector = *(uint16_t*)(code_ptr + 2);
             ctx->ip += 4;
@@ -574,23 +600,28 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             }
 
             /* =========================================================================
-             * CALL GATE INTERCEPT ROUTINE (PRODUCTION CLEAN PIPELINE)
+             * CALL GATE INTERCEPT ROUTINE (AUTOMATED STACK BALANCING)
              * ========================================================================= */
             if (virtual_ldt[ldt_index].type == LDT_TYPE_CALLGATE) {
-                printf("[API TRACE] Far Call intercepted to CallGate Selector: 0x%04X | Ordinal: %u\n",
-                       target_selector, virtual_ldt[ldt_index].limit);
+                printf("[API TRACE] Far Call intercepted to CallGate Selector: 0x%04X | %s Ordinal: %u\n",
+                       target_selector, virtual_ldt[ldt_index].mod_name, virtual_ldt[ldt_index].limit);
                 fflush(stdout);
 
                 if (virtual_ldt[ldt_index].wine_thunk) {
-                    /* Real x86 hardware pushes the 4-byte far return target prior to jumping */
+                    /* Simulate standard hardware stack initialization frame */
                     cpu286_push16(ctx, ctx->cs);
                     cpu286_push16(ctx, ctx->ip);
 
-                    /* Invoke native C subsystem implementation binding safely */
+                    /* Invoke modern Host C bridge subsystem logic */
                     uint16_t api_result = virtual_ldt[ldt_index].wine_thunk(ctx);
-
-                    /* Store return evaluation status directly into the AX accumulator */
                     ctx->ax = api_result;
+
+                    /* 
+                     * ENFORCED STACK BALANCE COHESION:
+                     * 1. Discard the 4-byte mock return address frame from top of stack (SP += 4)
+                     * 2. Clear the dynamic Pascal parameter footprint defined at registration (SP += param_bytes)
+                     */
+                    ctx->sp += 4 + virtual_ldt[ldt_index].param_bytes;
                 } else {
                     printf("[API TRACE WARNING] Unimplemented OS/2 CallGate: Selector 0x%04X (Ordinal %u)\n",
                            target_selector, virtual_ldt[ldt_index].limit);
@@ -606,7 +637,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             }
             break;
         }
-
 
 
      
@@ -705,11 +735,17 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
          * DATA MOVEMENT AND REGISTERS TRANSFER
          * ========================================================================= */
 
+        /* =========================================================================
+         * 16-BIT DATA MOVEMENT (MODRM COHESION STREAM ALIGNMENT - UPDATE)
+         * ========================================================================= */
         case 0x89: { /* MOV Ev, Gv (Move 16-bit Register to Memory/Register) */
-            uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
-            uint16_t* reg_src = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+            uint8_t modrm = *code_ptr;
+            /* Enforced Fix: Advance past the ModR/M byte immediately to lock stream context */
+            ctx->ip++;
+            code_ptr++;
 
             uint8_t mod = (modrm >> 6) & 0x03;
+            uint16_t* reg_src = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
             uint16_t* reg_dest = (mod == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
 
             if (mod != 3 && reg_dest == NULL) {
@@ -721,41 +757,157 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             break;
         }
 
+        case 0x8B: { /* MOV Gv, Ev (Move Memory/Register to 16-bit Register) */
+            uint8_t modrm = *code_ptr;
+            /* Enforced Fix: Advance past the ModR/M byte immediately to lock stream context */
+            ctx->ip++;
+            code_ptr++;
 
-
-        case 0x8B: { /* MOV Gv, Ev */
-            uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
+            uint8_t mod = (modrm >> 6) & 0x03;
             uint16_t* reg_dest = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
-            uint16_t* reg_src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+            uint16_t* reg_src = (mod == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
             if (reg_dest && reg_src) *reg_dest = *reg_src;
             break;
         }
+
         case 0xB8: ctx->ax = *(uint16_t*)code_ptr; ctx->ip += 2; break; /* MOV AX, iw */
         case 0xBB: ctx->bx = *(uint16_t*)code_ptr; ctx->ip += 2; break; /* MOV BX, iw */
         case 0xB9: ctx->cx = *(uint16_t*)code_ptr; ctx->ip += 2; break; /* MOV CX, iw */
         case 0xBA: ctx->dx = *(uint16_t*)code_ptr; ctx->ip += 2; break; /* MOV DX, iw */
 
+            /* =========================================================================
+             * CONTROL FLOW AND CONDITIONAL SHORT JUMPS (SAFE 16-BIT WRAPPING REWRITE)
+             * ========================================================================= */
+            case 0x70: { /* JO rel8 (Jump Short if Overflow) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if ((ctx->flags & OF_MASK) != 0) ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                break;
+            }
+            case 0x72: { /* JB / JC rel8 (Jump Short if Below / Carry) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (IS_CF_SET(ctx)) ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                break;
+            }
+            /* =========================================================================
+             * DIAGNOSTIC CONDITIONAL SHORT JUMPS (JAE / JNC rel8)
+             * ========================================================================= */
+            case 0x73: { /* JAE / JNC rel8 (Jump Short if Above or Equal / No Carry) */
+                int8_t rel = *(int8_t*)code_ptr;
+                uint16_t next_ip = ctx->ip + 1; /* Match the stream position after reading rel */
+                ctx->ip++;
+
+                printf("[DEBUG JAE] Active CF: %d | Raw Immediate rel8: %d (0x%02X) | Target IP would be: 0x%04X\n",
+                       IS_CF_SET(ctx) ? 1 : 0, rel, (uint8_t)rel, (uint16_t)((next_ip + (int16_t)rel) & 0xFFFF));
+                fflush(stdout);
+
+                if (!IS_CF_SET(ctx)) {
+                    ctx->ip = (uint16_t)((next_ip + (int16_t)rel) & 0xFFFF);
+                }
+                break;
+            }
+            case 0x74: { /* JZ / JE rel8 (Jump Short if Zero / Equal) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (IS_ZF_SET(ctx)) ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                break;
+            }
+            case 0x75: { /* JNZ / JNE rel8 (Jump Short if Not Zero / Not Equal) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (!IS_ZF_SET(ctx)) ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                break;
+            }
+            case 0x76: { /* JBE / JNA rel8 (Jump Short if Below or Equal / Not Above) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (IS_CF_SET(ctx) || IS_ZF_SET(ctx)) ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                break;
+            }
+            case 0x77: { /* JA / JNBE rel8 (Jump Short if Above / Not Below or Equal) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (!IS_CF_SET(ctx) && !IS_ZF_SET(ctx)) ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                break;
+            }
+            case 0x79: { /* JNS rel8 (Jump Short if Not Sign) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (!IS_SF_SET(ctx)) ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                break;
+            }
+            case 0x7C: { /* JL / JNGE rel8 (Jump Short if Less / Not Greater or Equal) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0)) {
+                    ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                }
+                break;
+            }
+            case 0x7D: { /* JGE / JNL rel8 (Jump Short if Greater or Equal / Not Less) */
+                int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
+                if (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0)) {
+                    ctx->ip = (uint16_t)((ctx->ip + (int16_t)rel) & 0xFFFF);
+                }
+                break;
+            }
+
+        
+
         /* =========================================================================
-         * CONTROL FLOW AND CONDITIONAL SHORT JUMPS
+         * 16-BIT ARITHMETIC WITH BORROW (SBB Ev, Gv)
          * ========================================================================= */
-        case 0x74: { int8_t rel = *(int8_t*)code_ptr; ctx->ip++; if (IS_ZF_SET(ctx)) ctx->ip += rel; break; }  /* JZ / JE */
-        case 0x75: { int8_t rel = *(int8_t*)code_ptr; ctx->ip++; if (!IS_ZF_SET(ctx)) ctx->ip += rel; break; } /* JNZ / JNE */
-        case 0x72: { int8_t rel = *(int8_t*)code_ptr; ctx->ip++; if ((ctx->flags & CF_MASK) != 0) ctx->ip += rel; break; }  /* JB / JC rel8 */
-        case 0x73: { int8_t rel = *(int8_t*)code_ptr; ctx->ip++; if (!IS_CF_SET(ctx)) ctx->ip += rel; break; } /* JAE / JNC / JNNB */
-        case 0x76: { int8_t rel = *(int8_t*)code_ptr; ctx->ip++; if (IS_CF_SET(ctx) || IS_ZF_SET(ctx)) ctx->ip += rel; break; } /* JBE / JNA */
-        case 0x77: { int8_t rel = *(int8_t*)code_ptr; ctx->ip++; if (!IS_CF_SET(ctx) && !IS_ZF_SET(ctx)) ctx->ip += rel; break; } /* JA / JNBE */
-        
-        case 0x7C: { /* JL / JNGE */
-            int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
-            if (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0)) ctx->ip += rel;
+        case 0x19: { /* SBB Ev, Gv (Subtract Register from Memory/Register with Borrow) */
+            uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
+            uint16_t* src = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+            uint16_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+            if (dest && src) {
+                uint32_t borrow = IS_CF_SET(ctx) ? 1 : 0;
+                uint32_t res = (uint32_t)*dest - (uint32_t)*src - borrow;
+
+                /* Update hardware status flags matching standard x86 rules */
+                cpu286_update_flags16(ctx, res);
+                if ((uint32_t)*dest < (uint32_t)*src + borrow) {
+                    ctx->flags |= CF_MASK;
+                } else {
+                    ctx->flags &= ~CF_MASK;
+                }
+                *dest = (uint16_t)res;
+            }
             break;
         }
-        case 0x7D: { /* JGE / JNL */
-            int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
-            if (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0)) ctx->ip += rel;
+
+        case 0x1C: { /* SBB AL, ib (Subtract Immediate Byte from AL with Borrow) */
+            uint8_t imm8 = *code_ptr;
+            ctx->ip++;
+
+            uint32_t borrow = IS_CF_SET(ctx) ? 1 : 0;
+            uint32_t res = (uint32_t)ctx->al - (uint32_t)imm8 - borrow;
+
+            /* Update flags context matching standard 8-bit Intel execution rules */
+            cpu286_update_flags8(ctx, res);
+            if ((uint32_t)ctx->al < (uint32_t)imm8 + borrow) {
+                ctx->flags |= CF_MASK;
+            } else {
+                ctx->flags &= ~CF_MASK;
+            }
+
+            ctx->al = (uint8_t)res;
             break;
         }
-        
+
+        /* =========================================================================
+         * SINGLE REGISTER 16-BIT QUICK DECREMENTS (DEC REG16 - UPDATE)
+         * ========================================================================= */
+        case 0x48: ctx->ax--; ctx->ip++; break; /* DEC AX */
+        case 0x49: ctx->cx--; ctx->ip++; break; /* DEC CX */
+        case 0x4A: ctx->dx--; ctx->ip++; break; /* DEC DX */
+        case 0x4B: ctx->bx--; ctx->ip++; break; /* DEC BX */
+        case 0x4C: ctx->sp--; ctx->ip++; break; /* DEC SP */
+        case 0x4D: ctx->bp--; ctx->ip++; break; /* DEC BP */
+        case 0x4E: ctx->si--; ctx->ip++; break; /* DEC SI */
+        case 0x4F: ctx->di--; ctx->ip++; break; /* DEC DI */
+        case 0x47: ctx->di++; ctx->ip++; break; /* INC DI */
+        case 0x52: cpu286_push16(ctx, ctx->dx); break; /* PUSH DX */
+        case 0x5A: ctx->dx = cpu286_pop16(ctx); break; /* POP DX */
+        case 0x0E: cpu286_push16(ctx, ctx->cs); break; /* PUSH CS */
+
+
         /* =========================================================================
          * CONTROL FLOW AND UNCONDITIONAL SHORT JUMPS
          * ========================================================================= */
@@ -769,38 +921,33 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 /* =========================================================================
          * 8-BIT / 16-BIT ARITHMETIC AND HARDWARE POINTER OPERATIONS (UPDATE)
          * ========================================================================= */
+                /* =========================================================================
+                 * HARDWARE STACK OPERATIONS (MODRM ENFORCED ALIGNMENT UPDATE)
+                 * ========================================================================= */
                 case 0x8F: { /* POP Ev (Pop Word from Stack to Memory/Register) */
                     uint8_t modrm = *code_ptr;
-                    uint8_t mod = (modrm >> 6) & 0x03;
-
-                    /* Save historical stream pointer to restore state in case of safety fault */
-                    uint8_t* saved_code_ptr = code_ptr;
-                    uint16_t saved_ip = ctx->ip;
-
+                    /* Advance past the ModR/M byte immediately to keep stream alignment coherent */
                     ctx->ip++;
                     code_ptr++;
 
+                    uint8_t mod = (modrm >> 6) & 0x03;
                     void* mem_target = NULL;
                     uint16_t* reg_target = NULL;
 
                     if (mod == 3) {
                         reg_target = cpu286_get_reg16(ctx, modrm & 0x07);
                     } else {
+                        /* The helper will safely consume internal displacements (disp8/disp16) if present */
                         mem_target = cpu286_decode_modrm(ctx, modrm, &code_ptr);
                     }
-                    printf("[DEBUG POP] ModRM: 0x%02X | mod: %d | rm: %d | BX: 0x%04X SI: 0x%04X BP: 0x%04X DI: 0x%04X\n",
-                           modrm, mod, modrm & 0x07, ctx->bx, ctx->si, ctx->bp, ctx->di);
 
-                    /* If it is an architecture memory target and decode failed (GPF boundary),
-                     * rollback the stream pointers to prevent fatal cascade misalignment */
+                    /* Protection Trap: Check for memory decoding faults or illegal null selectors */
                     if (mod != 3 && mem_target == NULL) {
-                        code_ptr = saved_code_ptr;
-                        ctx->ip = saved_ip;
-                        printf("[CPU Trap] POP Ev structural GPF: Targeting invalid segment memory boundary.\n");
+                        printf("[CPU TRAP] POP Ev structural GPF: Target memory resolved to a Null Segment boundary.\n");
                         exit(139);
                     }
 
-                    /* Safely perform the stack extraction operation */
+                    /* Safely perform the physical stack extraction operation */
                     uint16_t popped_val = cpu286_pop16(ctx);
 
                     if (mod == 3) {
@@ -810,6 +957,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     }
                     break;
                 }
+
 
         case 0x02: { /* ADD Gb, Eb (Add Memory/Register to 8-bit Register) */
             uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
@@ -859,18 +1007,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         }
 
         /* =========================================================================
-         * ADDITIONAL CONDITIONAL JUMPS (MAPPED FROM THE EXECUTION TRACE)
-         * ========================================================================= */
-        case 0x70: { /* JO rel8 (Jump Short if Overflow Flag is Set) */
-            int8_t rel = *(int8_t*)code_ptr; ctx->ip++; 
-            if ((ctx->flags & OF_MASK) != 0) ctx->ip += rel; 
-            break; 
-        }
-
-
-
-
-        /* =========================================================================
          * HARDWARE STACK OPERATIONS
          * ========================================================================= */
         case 0x50: cpu286_push16(ctx, ctx->ax); break; /* PUSH AX */
@@ -883,11 +1019,14 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x5D: ctx->bp = cpu286_pop16(ctx); break; /* POP BP */
         
         case 0x68: {
-            uint16_t imm16 = *(uint16_t*)code_ptr;
-            cpu286_push16(ctx, imm16); 
-            ctx->ip += 2; 
-            break; 
-        } /* PUSH imm16 */
+            uint16_t imm16;
+            memcpy(&imm16, code_ptr, 2); // Protection against host misalignment
+            cpu286_push16(ctx, imm16);
+            ctx->ip += 2;
+            // cope_ptr do not need to advance
+            // memcpy should avoid page faults on x64 hosts
+            break;
+        }/* PUSH imm16 */
         
         case 0x6A: {
             int8_t imm8 = *(int8_t*)code_ptr;
@@ -929,7 +1068,26 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         }
 
         
-        case 0xC3: ctx->ip = cpu286_pop16(ctx); break; /* RET */
+        /* =========================================================================
+         * SUBROUTINE RETURNS (NEAR RET - STACK INTEGRITY BOUNDARY)
+         * ========================================================================= */
+        case 0xC3: { /* RET (Near Return to Calling Procedure) */
+            uint16_t target_ip = cpu286_pop16(ctx);
+
+            /* Enforced Fix: Catch uninitialized stack frame execution collapses early */
+            if (target_ip == 0x0000 && ctx->sp >= 0xFFF0) {
+                printf("\n[CPU TRAP] Critical Stack Desynchronization detected during RET!\n");
+                printf("[METRICS ] SP: %04X | BP: %04X | Stack top value was zero.\n", ctx->sp - 2, ctx->bp);
+                printf("[REASON  ] Subroutine accumulated unbalanced PUSH operations prior to IP: %04X\n", ctx->ip - 1);
+                exit(139);
+            }
+
+            ctx->ip = target_ip;
+            break;
+        }
+
+
+
         
             /* =========================================================================
              * STRING MANIPULATION (MOVSB/MOVSW with Repeat Prefix [REP] Support)
@@ -1241,12 +1399,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
          * ========================================================================= */
         case 0xFC: ctx->flags &= ~DF_MASK; break; /* CLD (Clear Direction Flag) */
 
-        /* =========================================================================
-         * SINGLE REGISTER INCREMENT / DECREMENT (16-BIT QUICK OPCODES)
-         * ========================================================================= */
-        case 0x46: ctx->si++; ctx->ip++; break; /* INC SI */
-        case 0x49: ctx->cx--; ctx->ip++; break; /* DEC CX */
-        case 0x4F: ctx->di--; ctx->ip++; break; /* DEC DI */
 
         /* =========================================================================
          * DATA MOVEMENT (MOV ABSOLUTE / EXCHANGE)
@@ -1350,28 +1502,42 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         }
 
         /* =========================================================================
-         * HIGH-LEVEL PROCEDURE PROLOGUE (ENTER)
+         * HIGH-LEVEL PROCEDURE PROLOGUE (ENTER - COHESION STREAM ALIGNMENT)
          * ========================================================================= */
-        case 0xC8: { /* ENTER imm16, imm8 (Creates a procedure stack frame structure) */
-            uint16_t alloc_size = *(uint16_t*)code_ptr;
-            uint8_t nesting_level = *(code_ptr + 2);
-            ctx->ip += 3;
+        case 0xC8: { /* ENTER imm16, imm8 (Creates a dynamic procedure stack frame structure) */
+            uint16_t alloc_size;
+            uint8_t nesting_level;
 
+            /* ENFORCED FIX: Safely extract operands from current stream pointer layout */
+            memcpy(&alloc_size, code_ptr, 2);
+            nesting_level = *(code_ptr + 2);
+
+            /* Advance both structural stream pointers by 3 bytes to match the 4-byte footprint */
+            ctx->ip += 3;
+            code_ptr += 3;
+
+            /* Push the historical Base Pointer (BP) onto the active stack frame */
             cpu286_push16(ctx, ctx->bp);
             uint16_t frame_ptr = ctx->sp;
 
             if (nesting_level > 0) {
+                /* Handle nested lexical scope display frames tracking indicators */
+                uint16_t temporary_bp = ctx->bp;
                 for (uint8_t i = 1; i < nesting_level; i++) {
-                    ctx->bp -= 2;
-                    uint16_t parent_fp = *(uint16_t*)mode16to32(ctx->ss, ctx->bp);
-                    cpu286_push16(ctx, parent_fp);
+                    temporary_bp -= 2;
+                    uint16_t* parent_fp = (uint16_t*)mode16to32(ctx->ss, temporary_bp);
+                    if (parent_fp) {
+                        cpu286_push16(ctx, *parent_fp);
+                    }
                 }
                 cpu286_push16(ctx, frame_ptr);
             }
+
             ctx->bp = frame_ptr;
-            ctx->sp -= alloc_size; /* Allocate local dynamic frame variables area */
+            ctx->sp -= alloc_size; /* Allocate local dynamic automatic variables area */
             break;
         }
+
 
         /* =========================================================================
          * EXTENDED GROUP 5 OPERATIONS GRP5 (INDIRECT CALLS / JUMPS / INC / DEC)
@@ -1425,10 +1591,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             break;
         }
 
-        /* =========================================================================
-         * 16-BIT QUICK DECREMENT
-         * ========================================================================= */
-        case 0x48: ctx->ax--; ctx->ip++; break; /* DEC AX */
 
         /* =========================================================================
          * ADVANCED STRING MANIPULATION (LODSB / STOSB)
@@ -1507,6 +1669,24 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             }
             break;
         }
+
+        /* =========================================================================
+         * SUBROUTINE RETURNS WITH PARAMETER CLEANUP (RETN imm16)
+         * ========================================================================= */
+        case 0xC2: { /* RETN imm16 (Near Return and Pop Stack Parameters) */
+            uint16_t pop_bytes;
+            /* Fetch the 16-bit immediate parameter byte count directly from code stream */
+            memcpy(&pop_bytes, code_ptr, 2);
+
+            /* Pop the target local Instruction Pointer (IP) from the virtual stack */
+            ctx->ip = cpu286_pop16(ctx);
+
+            /* Clean up the caller parameters from the active stack frame */
+            ctx->sp += pop_bytes;
+            break;
+        }
+
+
 
         /* =========================================================================
          * 8-BIT EXTENDED OPERATIONS GRP4 (INC / DEC Eb)
@@ -1695,17 +1875,40 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             break;
         }
 
+        /* =========================================================================
+         * BOUNDS CHECKING OPERATIONS (BOUND Gv, Ma - COHESION BYPASS UPDATE)
+         * ========================================================================= */
+        case 0x63: { /* BOUND Gv, Ma (Check Array Index Against Bounds) */
+            uint8_t modrm = *code_ptr;
+            ctx->ip++;
+            code_ptr++;
+
+            uint8_t mod = (modrm >> 6) & 0x03;
+            if (mod == 3) {
+                printf("[CPU TRAP] Invalid ModR/M mod=3 for BOUND instruction at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                exit(139);
+            }
+
+            /* Advance the ModR/M decoder pipeline safely to keep opcodes in sync */
+            cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+            /*
+             * CRITICAL REVERSE ENGINEERING HACK:
+             * Bypass the hard stop warning to allow compiled OS/2 strings parsers
+             * to gracefully roll over indices without corrupting cascade execution.
+             */
+            break;
+        }
+
+
+
+
 
                 /* =========================================================================
          * 16-BIT QUICK INCREMENT
          * ========================================================================= */
         case 0x40: ctx->ax++; ctx->ip++; break; /* INC AX */
 
-        /* =========================================================================
-         * FAST ACCUMULATOR EXCHANGES (1-BYTE QUICK OPCODES)
-         * ========================================================================= */
-        case 0x96: { uint16_t tmp = ctx->ax; ctx->ax = ctx->si; ctx->si = tmp; break; } /* XCHG AX, SI */
-        case 0x97: { uint16_t tmp = ctx->ax; ctx->ax = ctx->di; ctx->di = tmp; break; } /* XCHG AX, DI */
 
                /* =========================================================================
          * ADVANCED WORD STRINGS & SCANNING (LODSW / SCASB) WITH FAULT TRAPPING
@@ -1732,6 +1935,41 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             if (ctx->al < *dest) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
             if (IS_DF_SET(ctx)) ctx->di--; else ctx->di++;
             break;
+        }
+
+
+        /* =========================================================================
+         * FAST ACCUMULATOR EXCHANGES (1-BYTE QUICK OPCODES - UPDATE)
+         * ========================================================================= */
+        case 0x91: { uint16_t tmp = ctx->ax; ctx->ax = ctx->cx; ctx->cx = tmp; break; } /* XCHG AX, CX */
+        case 0x92: { uint16_t tmp = ctx->ax; ctx->ax = ctx->dx; ctx->dx = tmp; break; } /* XCHG AX, DX */
+        case 0x93: { uint16_t tmp = ctx->ax; ctx->ax = ctx->bx; ctx->bx = tmp; break; } /* XCHG AX, BX */
+        case 0x94: { uint16_t tmp = ctx->ax; ctx->ax = ctx->sp; ctx->sp = tmp; break; } /* XCHG AX, SP */
+        case 0x95: { uint16_t tmp = ctx->ax; ctx->ax = ctx->bp; ctx->bp = tmp; break; } /* XCHG AX, BP */
+        case 0x96: { uint16_t tmp = ctx->ax; ctx->ax = ctx->si; ctx->si = tmp; break; } /* XCHG AX, SI */
+        case 0x97: { uint16_t tmp = ctx->ax; ctx->ax = ctx->di; ctx->di = tmp; break; } /* XCHG AX, DI */
+
+
+        /* =========================================================================
+         * SIGN EXTENSION OPERATIONS (1-BYTE OPCODES)
+         * ========================================================================= */
+
+        case 0x98: { /* CBW (Convert Byte to Word: Extend AL sign bit into AH) */
+            if (ctx->al & 0x80) {
+                ctx->ah = 0xFF;
+            } else {
+                ctx->ah = 0x00;
+            }
+            break;
+        }
+
+        case 0x99: { /* CWD (Convert Word to Doubleword: Extend AX sign bit into DX) */
+                if (ctx->ax & 0x8000) {
+                    ctx->dx = 0xFFFF;
+                } else {
+                    ctx->dx = 0x0000;
+                }
+                break;
         }
 
 
@@ -1763,21 +2001,9 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             }
 
 
-
-
-        /* =========================================================================
-         * QUICK REGISTER MANIPULATIONS
-         * ========================================================================= */
-        case 0x47: ctx->di++; ctx->ip++; break; /* INC DI */
-        case 0x4B: ctx->bx--; ctx->ip++; break; /* DEC BX */
-        case 0x52: cpu286_push16(ctx, ctx->dx); break; /* PUSH DX */
-        case 0x5A: ctx->dx = cpu286_pop16(ctx); break; /* POP DX */
-        case 0x0E: cpu286_push16(ctx, ctx->cs); break; /* PUSH CS */
-
         /* =========================================================================
          * CONDITIONAL FLOW EXTENSIONS
          * ========================================================================= */
-        case 0x79: { int8_t rel = *(int8_t*)code_ptr; ctx->ip++; if (!IS_SF_SET(ctx)) ctx->ip += rel; break; } /* JNS rel8 */
         case 0xE3: { /* JCXZ rel8 (Jump short if CX is 0) */
             int8_t rel = *(int8_t*)code_ptr; ctx->ip++;
             if (ctx->cx == 0) ctx->ip += rel;
@@ -1795,10 +2021,27 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             cpu286_update_flags16(ctx, ctx->ax);
             break;
         }
-        case 0xCC: { /* INT 3 (Software Breakpoint trap) */
-            printf("[DEBUG] INT 3 Breakpoint encountered at %04X:%04X\n", ctx->cs, ctx->ip - 1);
+
+        /* =========================================================================
+         * SOFTWARE INTERRUPT TRAPS & DIAGNOSTIC DUMPS (INT 3)
+         * ========================================================================= */
+        case 0xCC: { /* INT 3 (Software Breakpoint: Enforce crash dump if caught in loop) */
+            printf("\n[CPU TRAP] INT 3 Software Breakpoint caught at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 1);
+            printf("[REGISTERS DUMP] AX: %04X | BX: %04X | CX: %04X | DX: %04X\n", ctx->ax, ctx->bx, ctx->cx, ctx->dx);
+            printf("[STACK METRICS ] SP: %04X | BP: %04X | DS: %04X | ES: %04X | SS: %04X\n", ctx->sp, ctx->bp, ctx->ds, ctx->es, ctx->ss);
+
+            /* Print the memory content at the top of the stack to see where RETN was trying to go */
+            uint16_t* stack_top = (uint16_t*)mode16to32(ctx->ss, ctx->sp);
+            if (stack_top) {
+                printf("[STACK CONTENT ] Top 4 Words: [SP+0]=%04X [SP+2]=%04X [SP+4]=%04X [SP+6]=%04X\n\n",
+                       stack_top[0], stack_top[1], stack_top[2], stack_top[3]);
+            }
+
+            /* Force controlled termination to stop the infinite loop spam and capture the trace */
+            exit(139);
             break;
         }
+
 
         /* =========================================================================
          * EXTENDED GROUP 5 SUB-OPCODES (GRP5 UPDATE)

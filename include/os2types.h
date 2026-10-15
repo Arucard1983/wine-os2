@@ -63,5 +63,19 @@ typedef struct _KBDKEYINFO {
     ULONG  time;      /* Event timestamp */
 } KBDKEYINFO, *PKBDKEYINFO;
 
+/* =========================================================================
+ * 32-BIT OS/2 PROCESS INFORMATION BLOCK (PIB) STRUCT
+ * ========================================================================= */
+typedef struct _OS2_PIB {
+    ULONG  pib_ulpid;      /* Process ID (PID) */
+    ULONG  pib_ulppid;     /* Parent Process ID (PPID) */
+    ULONG  pib_ulhmte;     /* Module handle of the executable */
+    PCH    pib_pchcmd;     /* Command line string flat pointer */
+    PCH    pib_pchenv;     /* Environment block flat pointer */
+    ULONG  pib_flstatus;   /* Process status flags */
+    ULONG  pib_ultype;     /* Process type (0 = VIO Window, 1 = PM, etc.) */
+} OS2_PIB, *POS2_PIB;
+
+
 #endif /* __WINE_OS2TYPES_H */
 
