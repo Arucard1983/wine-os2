@@ -33,7 +33,7 @@ typedef struct {
     uint16_t ordinal;
 } NE_TARGET_ORDINAL;
 
-/* C90 Fix: Re-declared internal structural copies of NE headers to isolate compilation */
+/* Internal structural copies of NE headers to isolate compilation */
 typedef struct {
     uint8_t  magic[2];
     uint8_t  linker_ver;
@@ -140,7 +140,7 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
 
                 /* Fallback routing mechanism to catch missing descriptors gracefully */
                 if (strlen(resolved_dll_name) == 0 || resolved_dll_name[0] < 'A' || resolved_dll_name[0] > 'z') {
-                    strcpy(resolved_dll_name, "DOSCALLS");
+                    lstrcpynA(resolved_dll_name, "DOSCALLS", sizeof(resolved_dll_name));
                 }
 
                 /* Dynamic Subsystem Loading Architecture via Wine API */
@@ -218,20 +218,23 @@ int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr) {
 
     for (i = 0; i < ne_hdr->seg_count; i++) {
         NE_SEG_ENTRY_INTERNAL seg;
-        uint32_t alloc_size = 0x10000;
         void* linear_mem;
         uint16_t ldt_index;
 
         fseek(file, absolute_seg_table + (i * sizeof(NE_SEG_ENTRY_INTERNAL)), SEEK_SET);
         if (fread(&seg, sizeof(NE_SEG_ENTRY_INTERNAL), 1, file) != 1) break;
 
-        /* Win32 Native virtual commitment */
-        linear_mem = VirtualAlloc(NULL, alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        /*
+         * ENFORCED FIX: Modern Win32 VirtualAlloc allocation boundary footprint synchronization.
+         * Force allocate a full secure 64KB (0x10000) frame block shell space to properly map and protect
+         * uninitialized BSS / data runtime layouts that span further than static file raw track lengths.
+         */
+        linear_mem = VirtualAlloc(NULL, 0x10000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         if (!linear_mem) {
             printf("[NE Loader Error] Failed to allocate memory frame block for Segment #%d\n", i + 1);
             return 0;
         }
-        memset(linear_mem, 0, alloc_size);
+        memset(linear_mem, 0, 0x10000);
 
         if (seg.sector_offset > 0) {
             uint32_t file_offset = (uint32_t)seg.sector_offset << ne_hdr->logical_sector;
@@ -243,7 +246,9 @@ int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr) {
             long current_pos = ftell(file);
 
             fseek(file, file_offset, SEEK_SET);
-            fread(linear_mem, 1, seg.length, file);
+            if (seg.length > 0) {
+                fread(linear_mem, 1, seg.length, file);
+            }
 
             /* Checkpoint Match Variant A: Aligned boundary matching standard compilation linkers */
             fseek(file, reloc_table_offset_aligned, SEEK_SET);
@@ -259,15 +264,19 @@ int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr) {
             }
             fseek(file, current_pos, SEEK_SET);
         }
-        /* Bind the mapped structural linear pointer context securely directly to our LDT slot */
+        /*
+         * ENFORCED FIX: Lock the descriptor limit metric context flat at 0xFFFF.
+         * This blinds the interpreter loop structure to legacy truncated lengths and guarantees
+         * code fetches targeting data pointers higher than raw file data (BSS) won't trigger spurious GPFs.
+         */
         ldt_index = i + 1;
         virtual_ldt[ldt_index].base       = (uintptr_t)linear_mem;
-        virtual_ldt[ldt_index].limit      = alloc_size - 1;
+        virtual_ldt[ldt_index].limit      = 0xFFFF;
         virtual_ldt[ldt_index].present    = 1;
         virtual_ldt[ldt_index].read_write = 1;
         virtual_ldt[ldt_index].type       = LDT_TYPE_SEGMENT;
-        printf("[NE Loader] Segment #%d mapped at: %p | Selector registration: 0x%04X\n",
-               ldt_index, linear_mem, (ldt_index << 3) | 3);
+        printf("[NE Loader] Segment #%d mapped at: %p | Bound Limit: 0x%04X | Selector: 0x%04X\n",
+               ldt_index, linear_mem, virtual_ldt[ldt_index].limit, (ldt_index << 3) | 3);
     }
     return 1;
 }

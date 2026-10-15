@@ -14,6 +14,9 @@
 #include "wineos2_286cpu.h"
 #include "wineos2_env.h"
 
+/* ENFORCED FIX: Centralized global memory allocation instance for the shared virtual LDT */
+OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
+
 /* Forward declarations for the loader components */
 int lx_process_object_pages(FILE* file, uint32_t ne_base, void* hdr, void* obj, void* addr);
 int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr);
@@ -222,9 +225,28 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
         return 0;
     }
 
-    memset(&cpu_context, 0, sizeof(CPU286_Context));
-    cpu_context.cs = (ne_hdr.ne_cs << 3) | 3; 
-    cpu_context.ip = ne_hdr.ne_ip;
+        memset(&cpu_context, 0, sizeof(CPU286_Context));
+    
+    // FIX: Extract correctly the segment number and IP from cs_ip
+    uint16_t initial_seg_index = (uint16_t)((ne_hdr.cs_ip >> 16) & 0xFFFF);
+    uint16_t initial_ip        = (uint16_t)(ne_hdr.cs_ip & 0xFFFF);
+
+    // Adjust LDT selector (index << 3) with RPL=3 for Ring 3
+    cpu_context.cs = (initial_seg_index << 3) | 3; 
+    cpu_context.ip = initial_ip;
+
+    if (ne_hdr.ss_sp == 0) {
+        cpu_context.ss = (2 << 3) | 3; // Fallback to Segment #2
+        cpu_context.sp = 0xFFFE;
+    } else {
+        // FIX: Extract the initial stack segment and SP from ss_sp
+        uint16_t initial_stack_seg = (uint16_t)((ne_hdr.ss_sp >> 16) & 0xFFFF);
+        uint16_t initial_sp        = (uint16_t)(ne_hdr.ss_sp & 0xFFFF);
+        
+        cpu_context.ss = (initial_stack_seg << 3) | 3;
+        cpu_context.sp = initial_sp;
+    }
+
 
 
     if (ne_hdr.ss_sp == 0) {
@@ -253,36 +275,40 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
     return 1;
 }
 
-__declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, void* thunk_ptr) {
+/* Enforced Fix: Added param_bytes to match standard 286 far callgate descriptors */
+__declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr) {
     uint16_t i;
     for (i = 500; i < LDT_MAX_ENTRIES; i++) {
-        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE &&
-            virtual_ldt[i].wine_thunk == (uint16_t (*)(CPU286_Context*))thunk_ptr) {
+        if (!virtual_ldt[i].present) {
+            virtual_ldt[i].wine_thunk   = (uint16_t (*)(CPU286_Context*))thunk_ptr;
+            virtual_ldt[i].limit        = ordinal;
+            virtual_ldt[i].param_bytes  = param_bytes; /* Storing the Pascal stack frame footprint */
+            virtual_ldt[i].present      = 1;
+            virtual_ldt[i].type         = LDT_TYPE_CALLGATE;
+            
+            if (mod_name) {
+                lstrcpynA(virtual_ldt[i].mod_name, mod_name, sizeof(virtual_ldt[i].mod_name));
+            } else {
+                lstrcpynA(virtual_ldt[i].mod_name, "DOSCALLS", sizeof(virtual_ldt[i].mod_name));
+            }
             return (i << 3) | 3;
-            }
-            if (!virtual_ldt[i].present) {
-                virtual_ldt[i].wine_thunk   = (uint16_t (*)(CPU286_Context*))thunk_ptr;
-                virtual_ldt[i].limit        = ordinal;
-                virtual_ldt[i].present      = 1;
-                virtual_ldt[i].read_write   = 1;
-                virtual_ldt[i].type         = LDT_TYPE_CALLGATE;
-                return (i << 3) | 3;
-            }
-    }
-    return 0;
-}
-
-uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
-    uint16_t i;
-    for (i = 500; i < LDT_MAX_ENTRIES; i++) {
-       if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE && 
-         virtual_ldt[i].limit == ordinal && strcmp(virtual_ldt[i].mod_name, mod_name) == 0) {
-        return (i << 3) | 3;
-          }
         }
     }
     return 0;
 }
+
+
+uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
+    uint16_t i;
+    for (i = 500; i < LDT_MAX_ENTRIES; i++) {
+        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE && 
+            virtual_ldt[i].limit == ordinal && strcmp(virtual_ldt[i].mod_name, mod_name) == 0) {
+            return (i << 3) | 3;
+        }
+    } /* Enforced fix: Correctly closed the for-loop context scope here */
+    return 0;
+}
+
 
 /* Stable ANSI main entry point matching classical architecture standard requirements */
 int main(int argc, char *argv[]) {
