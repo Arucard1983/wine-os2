@@ -284,7 +284,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
     code_ptr = (uint8_t*)mode16to32(ctx->cs, ctx->ip);
     if (!code_ptr) {
         printf("GPF(0): Code Fetch Fault at %04X:%04X\n", ctx->cs, ctx->ip);
-        return; 
+        exit(139); //GPF should stop, not continue!
     }
 
     /* Resolve String Repeat Prefix (REP/REPE/REPNE) */
@@ -577,12 +577,37 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         }
 
 
-                case 0x9A: { /* CALL far ptr16:16 */
+        case 0x9A: { /* CALL far ptr16:16 */
             uint16_t target_offset = *(uint16_t*)code_ptr;
             uint16_t target_selector = *(uint16_t*)(code_ptr + 2);
             ctx->ip += 4;
 
-            /* Intercept potential dynamic runtime table selection anomalies */
+            /* =========================================================================
+             * DYNAMIC RELOCATION INTERCEPT (FIX FOR SELECTOR 0x00FF / 0xFFFF)
+             * ========================================================================= */
+            if (target_selector == 0x00FF || target_selector == 0xFFFF) {
+                /* In unpatched NE binaries, 0x00FF/0xFFFF indicates an external API import.
+                 * The target_offset often contains the raw ordinal or relocation index.
+                 * We dynamically resolve it against registered DOSCALLS gates as an execution safety net. */
+                uint16_t mock_ordinal = target_offset;
+                uint16_t resolved_gate = wineos2_get_callgate_selector("DOSCALLS", mock_ordinal);
+
+                if (resolved_gate != 0) {
+                    target_selector = resolved_gate;
+                } else {
+                    /* Fallback recovery point: route to DosExit (typically Ordinal 5 or 234)
+                     * to allow graceful containment instead of an untracked host crash. */
+                    printf("[Loader Reloc] Intercepted unpatched far call with selector 0x%04X! Presumed Ordinal: %u\n",
+                           target_selector, mock_ordinal);
+                    target_selector = wineos2_get_callgate_selector("DOSCALLS", 5); /* DosExit */
+                    if (target_selector == 0) {
+                        printf("\n[CRITICAL GPF] Fatal dynamic API resolution collapse at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 5);
+                        exit(139);
+                    }
+                }
+            }
+
+            /* Intercept potential dynamic LDT layout selection anomalies */
             if (target_selector == 0x30AE || target_selector == 0x0001 || (target_selector >> 3) >= LDT_MAX_ENTRIES) {
                 printf("[LDT Recovery] Intercepted invalid target selector 0x%04X.\n", target_selector);
                 ctx->ax = 0;
@@ -616,11 +641,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     uint16_t api_result = virtual_ldt[ldt_index].wine_thunk(ctx);
                     ctx->ax = api_result;
 
-                    /* 
-                     * ENFORCED STACK BALANCE COHESION:
-                     * 1. Discard the 4-byte mock return address frame from top of stack (SP += 4)
-                     * 2. Clear the dynamic Pascal parameter footprint defined at registration (SP += param_bytes)
-                     */
+                    /* Enforce strict stack balance alignment matching the Pascal calling convention footprint */
                     ctx->sp += 4 + virtual_ldt[ldt_index].param_bytes;
                 } else {
                     printf("[API TRACE WARNING] Unimplemented OS/2 CallGate: Selector 0x%04X (Ordinal %u)\n",
@@ -628,7 +649,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     ctx->ax = 182; /* ERROR_INVALID_STARTING_CODESEG */
                 }
             }
-            /* NORMAL FAR CALL PROCEEDING */
+            /* NORMAL PROTECTED MODE INTER-SEGMENT PROCEEDING */
             else {
                 cpu286_push16(ctx, ctx->cs);
                 cpu286_push16(ctx, ctx->ip);
@@ -637,6 +658,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             }
             break;
         }
+
 
 
      
@@ -685,6 +707,58 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                  }
                  break;
              }
+             /* =========================================================================
+              * 16-BIT CONDITIONAL LONG JUMPS (Opcodes 0x0F 0x80 to 0x0F 0x8F)
+              * ========================================================================= */
+             case 0x80:   /* JO rel16 (Jump Near if Overflow) */
+             case 0x81:   /* JNO rel16 (Jump Near if Not Overflow) */
+             case 0x82:   /* JB/JC rel16 (Jump Near if Below/Carry) */
+             case 0x83:   /* JAE/JNC rel16 (Jump Near if Above or Equal/No Carry) */
+             case 0x84:   /* JE/JZ rel16 (Jump Near if Equal/Zero) */
+             case 0x85:   /* JNE/JNZ rel16 (Jump Near if Not Equal/Not Zero) */
+             case 0x86:   /* JBE/JNA rel16 (Jump Near if Below or Equal/Not Above) */
+             case 0x87:   /* JA/JNBE rel16 (Jump Near if Above/Not Below or Equal) */
+             case 0x88:   /* JS rel16 (Jump Near if Sign) */
+             case 0x89:   /* JNS rel16 (Jump Near if Not Sign) */
+             case 0x8A:   /* JP/JPE rel16 (Jump Near if Parity/Parity Equal) */
+             case 0x8B:   /* JNP/JPO rel16 (Jump Near if Not Parity/Parity Odd) */
+             case 0x8C:   /* JL/JNGE rel16 (Jump Near if Less/Not Greater or Equal) */
+             case 0x8D:   /* JGE/JNL rel16 (Jump Near if Greater or Equal/Not Less) */
+             case 0x8E:   /* JLE/JNG rel16 (Jump Near if Less or Equal/Not Greater) */
+             case 0x8F: { /* JG/JNLE rel16 (Jump Near if Greater/Not Less or Equal) */
+                 int16_t rel16;
+                 /* Use memcpy to protect against potential unaligned host pointer reading faults */
+                 memcpy(&rel16, code_ptr, 2);
+                 ctx->ip += 2; /* Advance past the 2 displacement bytes immediately */
+
+                 int condition_met = 0;
+                 uint8_t condition = extended_opcode & 0x0F;
+
+                 switch (condition) {
+                     case 0x0: condition_met = ((ctx->flags & OF_MASK) != 0); break;
+                     case 0x1: condition_met = ((ctx->flags & OF_MASK) == 0); break;
+                     case 0x2: condition_met = IS_CF_SET(ctx); break;
+                     case 0x3: condition_met = !IS_CF_SET(ctx); break;
+                     case 0x4: condition_met = IS_ZF_SET(ctx); break;
+                     case 0x5: condition_met = !IS_ZF_SET(ctx); break;
+                     case 0x6: condition_met = (IS_CF_SET(ctx) || IS_ZF_SET(ctx)); break;
+                     case 0x7: condition_met = (!IS_CF_SET(ctx) && !IS_ZF_SET(ctx)); break;
+                     case 0x8: condition_met = IS_SF_SET(ctx); break;
+                     case 0x9: condition_met = !IS_SF_SET(ctx); break;
+                     case 0xC: condition_met = (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0)); break;
+                     case 0xD: condition_met = (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0)); break;
+                     case 0xE: condition_met = (IS_ZF_SET(ctx) || (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0))); break;
+                     case 0xF: condition_met = (!IS_ZF_SET(ctx) && (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0))); break;
+                     default:  condition_met = 0; break; /* Opcodes 0x8A and 0x8B (Parity) ignored for standard OS/2 Ring3 apps */
+                 }
+
+                 if (condition_met) {
+                     /* Apply 16-bit unsigned hardware wrapping mask to target instruction pointer */
+                     ctx->ip = (uint16_t)((ctx->ip + rel16) & 0xFFFF);
+                 }
+                 break;
+             }
+
              default:
                  printf("Unsupported 2-Byte Extended Opcode: 0x0F 0x%02X at IP: 0x%04X\n", extended_opcode, ctx->ip - 2);
                  break;
@@ -704,7 +778,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             /* Mod 3 (Register-to-Register) is invalid for LDS/LES as they require a memory source */
             if (((modrm >> 6) & 0x03) == 3) {
                 printf("GPF(0): Invalid ModR/M mod=3 for LDS/LES at IP: %04X\n", ctx->ip - 2);
-                break;
+                exit(139); //trigger exit
             }
 
             uint16_t* reg_dest = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
@@ -894,6 +968,14 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         /* =========================================================================
          * SINGLE REGISTER 16-BIT QUICK DECREMENTS (DEC REG16 - UPDATE)
          * ========================================================================= */
+        case 0x40: ctx->ax++; ctx->ip++; break; /* INC AX */
+        case 0x41: ctx->cx++; ctx->ip++; break; /* INC CX */
+        case 0x42: ctx->dx++; ctx->ip++; break; /* INC DX */
+        case 0x43: ctx->bx++; ctx->ip++; break; /* INC BX */
+        case 0x44: ctx->sp++; ctx->ip++; break; /* INC SP */
+        case 0x45: ctx->bp++; ctx->ip++; break; /* INC BP */
+        case 0x46: ctx->si++; ctx->ip++; break; /* INC SI */
+        case 0x47: ctx->di++; ctx->ip++; break; /* INC DI */
         case 0x48: ctx->ax--; ctx->ip++; break; /* DEC AX */
         case 0x49: ctx->cx--; ctx->ip++; break; /* DEC CX */
         case 0x4A: ctx->dx--; ctx->ip++; break; /* DEC DX */
@@ -902,7 +984,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x4D: ctx->bp--; ctx->ip++; break; /* DEC BP */
         case 0x4E: ctx->si--; ctx->ip++; break; /* DEC SI */
         case 0x4F: ctx->di--; ctx->ip++; break; /* DEC DI */
-        case 0x47: ctx->di++; ctx->ip++; break; /* INC DI */
         case 0x52: cpu286_push16(ctx, ctx->dx); break; /* PUSH DX */
         case 0x5A: ctx->dx = cpu286_pop16(ctx); break; /* POP DX */
         case 0x0E: cpu286_push16(ctx, ctx->cs); break; /* PUSH CS */
@@ -1106,7 +1187,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     if (!src_ptr || !dest_ptr) {
                         printf("[GPF Trap] String execution fault at SI=%04X, DI=%04X. Aborting chain.\n", ctx->si, ctx->di);
                         fault_triggered = 1;
-                        break;
+                        exit(139); //GPF = STOP
                     }
 
                     memcpy(dest_ptr, src_ptr, size);
@@ -1126,61 +1207,240 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 break;
             }
 
+            /* =========================================================================
+             * STRING MANIPULATION COMPARATORS WITH REPEAT PREFIX COMPLIANCE (Opcodes 0xA6 / 0xA7)
+             * ========================================================================= */
+            case 0xA6:   /* CMPSB - Compare String Byte (DS:SI vs ES:DI) */
+            case 0xA7: { /* CMPSW - Compare String Word (DS:SI vs ES:DI) */
+                uint32_t count = (prefix == 0xF3 || prefix == 0xF2) ? ctx->cx : 1;
+                uint16_t element_size = (opcode == 0xA6) ? 1 : 2;
+                uint32_t iterations_executed = 0;
+
+                /* PM Safety Rule: Accessing memory through null selectors triggers an immediate GPF */
+                if (ctx->ds == 0 || ctx->es == 0) {
+                    printf("\n[CRITICAL GPF] String comparison attempted through a Null Segment Selector! DS=%04X, ES=%04X\n", ctx->ds, ctx->es);
+                    exit(139);
+                }
+
+                for (uint32_t i = 0; i < count; i++) {
+                    void* src_flat_ptr  = mode16to32(ctx->ds, ctx->SI_source_reg); /* Standard x86 uses DS:SI */
+                    void* dest_flat_ptr = mode16to32(ctx->es, ctx->di);            /* Standard x86 uses ES:DI */
+
+                    if (!src_flat_ptr || !dest_flat_ptr) {
+                        printf("\n[CRITICAL GPF] String comparison boundary violation at DS:SI=%04X:%04X, ES:DI=%04X:%04X\n",
+                               ctx->ds, ctx->si, ctx->es, ctx->di);
+                        exit(139);
+                    }
+
+                    uint32_t src_val = 0;
+                    uint32_t dest_val = 0;
+
+                    if (element_size == 1) {
+                        src_val  = *(uint8_t*)src_flat_ptr;
+                        dest_val = *(uint8_t*)dest_flat_ptr;
+                    } else {
+                        /* Handle potential unaligned memory layout spacing cleanly via structural sizing */
+                        memcpy(&src_val, src_flat_ptr, 2);
+                        memcpy(&dest_val, dest_flat_ptr, 2);
+                        src_val  &= 0xFFFF;
+                        dest_val &= 0xFFFF;
+                    }
+
+                    /* Execute subtraction validation logic: src_val - dest_val */
+                    uint32_t comparison_res = src_val - dest_val;
+
+                    if (element_size == 1) {
+                        cpu286_update_flags8(ctx, comparison_res);
+                        if (src_val < dest_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                    } else {
+                        cpu286_update_flags16(ctx, comparison_res);
+                        if (src_val < dest_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                    }
+
+                    iterations_executed++;
+
+                    /* Advance string pointers according to Direction Flag */
+                    if (IS_DF_SET(ctx)) {
+                        ctx->si -= element_size;
+                        ctx->di -= element_size;
+                    } else {
+                        ctx->si += element_size;
+                        ctx->di += element_size;
+                    }
+
+                    /* Handle REP/REPE/REPNE early loop terminations based on condition states */
+                    if (prefix == 0xF3) { /* REPE / REPZ - Repeat while equal */
+                        if (!IS_ZF_SET(ctx)) break;
+                    }
+                    else if (prefix == 0xF2) { /* REPNE / REPNZ - Repeat while not equal */
+                        if (IS_ZF_SET(ctx)) break;
+                    }
+                }
+
+                /* Correctly balance the loop tracker general register foot footprint */
+                if (prefix == 0xF3 || prefix == 0xF2) {
+                    ctx->cx -= iterations_executed;
+                }
+                break;
+            }
+
+            /* =========================================================================
+             * OPTIMIZED STRING STORE WORD (Opcode 0xAB)
+             * ========================================================================= */
+            case 0xAB: { /* STOSW - Store Word from AX into ES:DI */
+                /* PM Safety Rule: Accessing memory through a null selector triggers a GPF */
+                if (ctx->es == 0) {
+                    printf("\n[CRITICAL GPF] STOSW Attempted memory access through a Null ES Selector!\n");
+                    exit(139);
+                }
+
+                uint16_t* dest = (uint16_t*)mode16to32(ctx->es, ctx->di);
+                if (!dest) {
+                    printf("\n[CRITICAL GPF] STOSW Segment Limit Exceeded at ES:DI = %04X:%04X\n", ctx->es, ctx->di);
+                    exit(139);
+                }
+
+                *dest = ctx->ax;
+                if (IS_DF_SET(ctx)) ctx->di -= 2; else ctx->di += 2;
+                break;
+            }
+
+            /* =========================================================================
+             * MISSING REVERSE DIRECTION REVERSE OPERATION VARIANTS (Opcodes 0x23 / 0x32 / 0x0A)
+             * ========================================================================= */
+            case 0x23: { /* AND Gv, Ev - Move 16-bit Memory/Register into Register via AND */
+                uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
+                uint16_t* dest = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+                uint16_t* src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+                if ((((modrm >> 6) & 0x03) != 3) && !src) {
+                    printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x23 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                    exit(139);
+                }
+
+                if (dest && src) {
+                    *dest &= *src;
+                    cpu286_update_logical_flags16(ctx, *dest);
+                }
+                break;
+            }
+
+            case 0x32: { /* XOR Gb, Eb - Exclusive OR 8-bit Memory/Register to Register */
+                uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
+                uint8_t* dest = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
+                uint8_t* src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+                if ((((modrm >> 6) & 0x03) != 3) && !src) {
+                    printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x32 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                    exit(139);
+                }
+
+                if (dest && src) {
+                    *dest ^= *src;
+                    cpu286_update_flags8(ctx, *dest);
+                    ctx->flags &= ~(CF_MASK | OF_MASK);
+                }
+                break;
+            }
+
+            case 0x0A: { /* OR Gb, Eb - Logical Inclusive OR 8-bit Memory/Register to Register */
+                uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
+                uint8_t* dest = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
+                uint8_t* src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+                if ((((modrm >> 6) & 0x03) != 3) && !src) {
+                    printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x0A decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                    exit(139);
+                }
+
+                if (dest && src) {
+                    *dest |= *src;
+                    cpu286_update_flags8(ctx, *dest);
+                    ctx->flags &= ~(CF_MASK | OF_MASK);
+                }
+                break;
+            }
+
 
 
                 /* =========================================================================
          * ADVANCED ARITHMETIC GROUP 0xF7 (MUL, IMUL, DIV, IDIV)
          * ========================================================================= */
-        case 0xF7: {
-            uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
-            uint16_t* operand_ptr = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
-            
-            if (!operand_ptr) break;
-            uint16_t val = *operand_ptr;
-            uint8_t sub_op = (modrm >> 3) & 0x07;
+                /* =========================================================================
+                 * ADVANCED ARITHMETIC GROUP 0xF7 (MUL, IMUL, DIV, IDIV 16-BIT)
+                 * ========================================================================= */
+                case 0xF7: {
+                    uint8_t modrm = *code_ptr; ctx->ip++; code_ptr++;
+                    uint8_t sub_op = (modrm >> 3) & 0x07;
 
-            switch (sub_op) {
-                case 4: { /* MUL DX:AX = AX * r/m16 (Unsigned) */
-                    uint32_t res = (uint32_t)ctx->ax * val;
-                    ctx->ax = (uint16_t)(res & 0xFFFF);
-                    ctx->dx = (uint16_t)(res >> 16);
-                    if (ctx->dx != 0) ctx->flags |= (CF_MASK | OF_MASK);
-                    else ctx->flags &= ~(CF_MASK | OF_MASK);
+                    /* Resolve operand pointer (Register or Memory via ModR/M table) */
+                    uint16_t* operand_ptr = (((modrm >> 6) & 0x03) == 3)
+                    ? cpu286_get_reg16(ctx, modrm & 0x07)
+                    : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+                    /* ENFORCED FIX: If ModR/M point to memory and mapping fails, is GPF! */
+                    if ((((modrm >> 6) & 0x03) != 3) && !operand_ptr) {
+                        printf("\n[CRITICAL GPF] Memory access violation during Opcode 0xF7 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                        exit(139);
+                    }
+
+                    switch (sub_op) {
+                        case 4: { /* MUL DX:AX = AX * r/m16 (Unsigned) */
+                            uint32_t res = (uint32_t)ctx->ax * (*operand_ptr);
+                            ctx->ax = (uint16_t)(res & 0xFFFF);
+                            ctx->dx = (uint16_t)(res >> 16);
+                            if (ctx->dx != 0) ctx->flags |= (CF_MASK | OF_MASK);
+                            else ctx->flags &= ~(CF_MASK | OF_MASK);
+                            break;
+                        }
+                        case 5: { /* IMUL DX:AX = AX * r/m16 (Signed) */
+                            int32_t res = (int32_t)(int16_t)ctx->ax * (int32_t)(int16_t)(*operand_ptr);
+                            ctx->ax = (uint16_t)(res & 0xFFFF);
+                            ctx->dx = (uint16_t)(res >> 16);
+                            if ((res < -32768) || (res > 32767)) ctx->flags |= (CF_MASK | OF_MASK);
+                            else ctx->flags &= ~(CF_MASK | OF_MASK);
+                            break;
+                        }
+                        case 6: { /* DIV AX = DX:AX / r/m16, DX = Remainder (Unsigned) */
+                            uint16_t val = *operand_ptr;
+                            if (val == 0) {
+                                printf("\n[CRITICAL CPU STOP] Division by Zero (Unsigned 16-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                                exit(139);
+                            }
+                            uint32_t num = ((uint32_t)ctx->dx << 16) | ctx->ax;
+                            uint32_t quot = num / val;
+                            if (quot > 0xFFFF) {
+                                printf("\n[CRITICAL CPU STOP] Division Overflow (16-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                                exit(139);
+                            }
+                            ctx->ax = (uint16_t)quot;
+                            ctx->dx = (uint16_t)(num % val);
+                            break;
+                        }
+                        case 7: { /* IDIV AX = DX:AX / r/m16, DX = Remainder (Signed) */
+                            int16_t val = (int16_t)*operand_ptr;
+                            if (val == 0) {
+                                printf("\n[CRITICAL CPU STOP] Division by Zero (Signed 16-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                                exit(139);
+                            }
+                            int32_t num = (int32_t)(((uint32_t)ctx->dx << 16) | ctx->ax);
+                            int32_t quot = num / val;
+                            if (quot > 32767 || quot < -32768) {
+                                printf("\n[CRITICAL CPU STOP] Division Overflow (16-bit signed) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                                exit(139);
+                            }
+                            ctx->ax = (uint16_t)quot;
+                            ctx->dx = (uint16_t)(num % val);
+                            break;
+                        }
+                        default:
+                            printf("\n[CRITICAL CPU STOP] Unsupported Sub-Opcode %d in Group 0xF7 at CS:IP = %04X:%04X\n", sub_op, ctx->cs, ctx->ip - 2);
+                            exit(139);
+                    }
                     break;
                 }
-                case 5: { /* IMUL DX:AX = AX * r/m16 (Signed) */
-                    int32_t res = (int32_t)(int16_t)ctx->ax * (int32_t)(int16_t)val;
-                    ctx->ax = (uint16_t)(res & 0xFFFF);
-                    ctx->dx = (uint16_t)(res >> 16);
-                    /* If upper half is not a sign extension of the lower half */
-                    if ((res < -32768) || (res > 32767)) ctx->flags |= (CF_MASK | OF_MASK);
-                    else ctx->flags &= ~(CF_MASK | OF_MASK);
-                    break;
-                }
-                case 6: { /* DIV AX = DX:AX / r/m16, DX = Remainder (Unsigned) */
-                    if (val == 0) { printf("CPU Fault: Division by Zero\n"); break; }
-                    uint32_t num = ((uint32_t)ctx->dx << 16) | ctx->ax;
-                    uint32_t quot = num / val;
-                    if (quot > 0xFFFF) { printf("CPU Fault: Division Overflow\n"); break; }
-                    ctx->ax = (uint16_t)quot;
-                    ctx->dx = (uint16_t)(num % val);
-                    break;
-                }
-                case 7: { /* IDIV AX = DX:AX / r/m16, DX = Remainder (Signed) */
-                    if (val == 0) { printf("CPU Fault: Division by Zero\n"); break; }
-                    int32_t num = (int32_t)(((uint32_t)ctx->dx << 16) | ctx->ax);
-                    int32_t quot = num / (int16_t)val;
-                    if (quot > 32767 || quot < -32768) { printf("CPU Fault: Division Overflow\n"); break; }
-                    ctx->ax = (uint16_t)quot;
-                    ctx->dx = (uint16_t)(num % val);
-                    break;
-                }
-                default:
-                    printf("Unsupported Sub-Opcode %d in Group 0xF7\n", sub_op);
-                    break;
-            }
-            break;
-        }
+
+
 
         /* =========================================================================
          * ADVANCED 8-BIT MATH & LOGIC GROUP 3 (TEST, NOT, NEG, MUL, DIV)
@@ -1194,6 +1454,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             ? cpu286_get_reg8(ctx, modrm & 0x07)
             : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
 
+            /* ENFORCED FIX: If ModR/M point to memorty and fail, is GPF and STOP! */
+            if ((((modrm >> 6) & 0x03) != 3) && !operand_ptr) {
+                printf("\n[CRITICAL GPF] Memory access violation during Opcode 0xF6 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                exit(139);
+            }
+
             switch (sub_op) {
                 case 0:   /* TEST Eb, ib */
                 case 1: {
@@ -1201,7 +1467,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     uint8_t imm8 = *code_ptr; ctx->ip++; code_ptr++;
                     if (!operand_ptr) {
                         printf("[GPF] Memory access violation during TEST instruction operand fetch at %04X:%04X\n", ctx->cs, ctx->ip - 3);
-                        break;
+                        exit(139);
                     }
                     uint8_t res = *operand_ptr & imm8;
                     cpu286_update_flags8(ctx, res);
@@ -1209,12 +1475,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     break;
                 }
                 case 2: { /* NOT Eb (Invert all bits) */
-                    if (!operand_ptr) { printf("[GPF] Null pointer assignment intercepted in NOT execution\n"); break; }
+                    if (!operand_ptr) { printf("[GPF] Null pointer assignment intercepted in NOT execution\n"); exit(139); }
                     *operand_ptr = ~(*operand_ptr);
                     break; /* NOT does not modify any CPU status flags */
                 }
                 case 3: { /* NEG Eb (Two's Complement Negation) */
-                    if (!operand_ptr) { printf("[GPF] Null pointer assignment intercepted in NEG execution\n"); break; }
+                    if (!operand_ptr) { printf("[GPF] Null pointer assignment intercepted in NEG execution\n"); exit(139); }
                     uint8_t val = *operand_ptr;
                     uint32_t res = (uint32_t)0 - val;
                     cpu286_update_flags8(ctx, res);
@@ -1223,7 +1489,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     break;
                 }
                 case 4: { /* MUL AL * r/m8 (Unsigned Multiplication) */
-                    if (!operand_ptr) { printf("[GPF] Null pointer reference intercepted in MUL execution\n"); break; }
+                    if (!operand_ptr) { printf("[GPF] Null pointer reference intercepted in MUL execution\n"); exit(139); }
                     uint16_t res = (uint16_t)ctx->al * (*operand_ptr);
                     ctx->ax = res;
                     if (ctx->ah != 0) ctx->flags |= (CF_MASK | OF_MASK);
@@ -1231,7 +1497,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     break;
                 }
                 case 5: { /* IMUL AL * r/m8 (Signed Multiplication) */
-                    if (!operand_ptr) { printf("[GPF] Null pointer reference intercepted in IMUL execution\n"); break; }
+                    if (!operand_ptr) { printf("[GPF] Null pointer reference intercepted in IMUL execution\n"); exit(139); }
                     int16_t res = (int16_t)(int8_t)ctx->al * (int16_t)(int8_t)(*operand_ptr);
                     ctx->ax = (uint16_t)res;
                     if ((res < -128) || (res > 127)) ctx->flags |= (CF_MASK | OF_MASK);
@@ -1239,38 +1505,39 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     break;
                 }
                 case 6: { /* DIV AX / r/m8 (Unsigned) */
-                    if (!operand_ptr) { printf("[GPF] Null pointer reference in DIV\n"); break; }
                     uint8_t val = *operand_ptr;
-                    if (val == 0) { 
-                        /* HACK: Instead of aborting to DosExit, we force a safe mock value (0x00) 
-                         * and let the IP progress natively to the NEXT sequential instruction */
-                        ctx->al = 0x01; 
-                        ctx->ah = 0x00;
-                        /* DO NOT change ctx->ip to 0x1485 here anymore! Just let it flow */
-                        break; 
+                    if (val == 0) {
+                        printf("\n[CRITICAL CPU STOP] Division by Zero (Unsigned 8-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                        exit(139); /* Division by zero kills the application */
                     }
                     uint32_t quot = (uint32_t)ctx->ax / val;
-                    if (quot > 0xFF) { printf("CPU Fault: Division Overflow (8-bit)\n"); break; }
+                    if (quot > 0xFF) {
+                        printf("\n[CRITICAL CPU STOP] Division Overflow (8-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                        exit(139);
+                    }
                     ctx->al = (uint8_t)quot;
                     ctx->ah = (uint8_t)(ctx->ax % val);
                     break;
                 }
 
                 case 7: { /* IDIV AX / r/m8 (Signed) */
-                    if (!operand_ptr) { printf("[GPF] Null pointer reference in IDIV\n"); break; }
                     int8_t val = (int8_t)*operand_ptr;
                     if (val == 0) {
-                        printf("[CPU Trap] Intercepted Division by Zero (Signed 8-bit) at %04X:%04X. Diverting safely.\n", ctx->cs, ctx->ip - 3);
-                        ctx->al = 0x7F;
-                        ctx->ah = 0x00;
-                        ctx->ip = 0x1485; /* Redirect to clean exit */
-                        break;
+                        printf("\n[CRITICAL CPU STOP] Division by Zero (Signed 8-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                        exit(139);
                     }
                     int32_t quot = (int32_t)(int16_t)ctx->ax / val;
-                    if (quot > 127 || quot < -128) { printf("CPU Fault: Division Overflow (8-bit signed)\n"); break; }
+                    if (quot > 127 || quot < -128) {
+                        printf("\n[CRITICAL CPU STOP] Division Overflow (8-bit signed) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                        exit(139);
+                    }
                     ctx->al = (uint8_t)quot;
                     ctx->ah = (uint8_t)((int16_t)ctx->ax % val);
                     break;
+                }
+                default: {
+                    printf("\n[CRITICAL CPU STOP] Unsupported Sub-Opcode %d in Group 0xF6 at CS:IP = %04X:%04X\n", sub_op, ctx->cs, ctx->ip - 2);
+                    exit(139);
                 }
             }
             break;
@@ -1596,13 +1863,18 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
          * ADVANCED STRING MANIPULATION (LODSB / STOSB)
          * ========================================================================= */
         case 0xAC: { /* LODSB (Load Byte from DS:SI into AL) */
-            uint8_t* src = (uint8_t*)mode16to32(ctx->ds, ctx->si);
-            if (src) {
-                ctx->al = *src;
-                if (IS_DF_SET(ctx)) ctx->si--; else ctx->si++;
-            } else {
-                printf("GPF(0): LODSB Memory Violation at DS:SI\n");
+            /* Intel Protection Rule: Memory access by Null selection gives GPF */
+            if (ctx->ds == 0) {
+                printf("\n[CRITICAL GPF] LODSB Attempted memory access through a Null DS Selector!\n");
+                exit(139);
             }
+            uint8_t* src = (uint8_t*)mode16to32(ctx->ds, ctx->si);
+            if (!src) {
+                printf("\n[CRITICAL GPF] LODSB Segment Limit Exceeded at DS:SI = %04X:%04X\n", ctx->ds, ctx->si);
+                exit(139); /* STOP! */
+            }
+            ctx->al = *src;
+            if (IS_DF_SET(ctx)) ctx->si--; else ctx->si++;
             break;
         }
         case 0xAA: { /* STOSB (Store Byte from AL into ES:DI) */
@@ -1612,6 +1884,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 if (IS_DF_SET(ctx)) ctx->di--; else ctx->di++;
             } else {
                 printf("GPF(0): STOSB Memory Violation at ES:DI\n");
+                exit(139);
             }
             break;
         }
@@ -1876,6 +2149,45 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         }
 
         /* =========================================================================
+         * PUSHA / POPA - ALL REGISTERS STACK MANIPULATIONS (Opcodes 0x60 / 0x61)
+         * ========================================================================= */
+        case 0x60: { /* PUSHA - Push All General-Purpose Registers */
+            /* Enforce strict hardware behavior: cache the SP value before pushing */
+            uint16_t original_sp = ctx->sp;
+
+            cpu286_push16(ctx, ctx->ax);
+            cpu286_push16(ctx, ctx->cx);
+            cpu286_push16(ctx, ctx->dx);
+            cpu286_push16(ctx, ctx->bx);
+            cpu286_push16(ctx, original_sp); /* Push cached pre-instruction SP value */
+            cpu286_push16(ctx, ctx->bp);
+            cpu286_push16(ctx, ctx->si);
+            cpu286_push16(ctx, ctx->di);
+
+            ctx->ip++;
+            break;
+        }
+
+        case 0x61: { /* POPA - Pop All General-Purpose Registers */
+            ctx->di = cpu286_pop16(ctx);
+            ctx->si = cpu286_pop16(ctx);
+            ctx->bp = cpu286_pop16(ctx);
+
+            /* Enforce strict hardware behavior: discard the pushed SP placeholder value */
+            cpu286_pop16(ctx);
+
+            ctx->bx = cpu286_pop16(ctx);
+            ctx->dx = cpu286_pop16(ctx);
+            ctx->cx = cpu286_pop16(ctx);
+            ctx->ax = cpu286_pop16(ctx);
+
+            ctx->ip++;
+            break;
+        }
+
+
+
+        /* =========================================================================
          * BOUNDS CHECKING OPERATIONS (BOUND Gv, Ma - COHESION BYPASS UPDATE)
          * ========================================================================= */
         case 0x63: { /* BOUND Gv, Ma (Check Array Index Against Bounds) */
@@ -1900,35 +2212,77 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             break;
         }
 
-
-
-
-
-                /* =========================================================================
-         * 16-BIT QUICK INCREMENT
+        /* =========================================================================
+         * LOGICAL TEST INSTRUCTIONS (Opcodes 0x84 / 0x85)
          * ========================================================================= */
-        case 0x40: ctx->ax++; ctx->ip++; break; /* INC AX */
+        case 0x84: { /* TEST Eb, Gb - Test 8-bit Register against Memory/Register */
+            uint8_t modrm = *code_ptr;
+            ctx->ip++;
+            code_ptr++;
+
+            uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
+            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+            /* ENFORCED FIX: Strict memory safety trap for memory decoding faults */
+            if ((((modrm >> 6) & 0x03) != 3) && !dest) {
+                printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x84 execution at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                exit(139);
+            }
+
+            if (dest && src) {
+                uint32_t result = (uint32_t)*dest & *src;
+                cpu286_update_flags8(ctx, result);
+                ctx->flags &= ~(CF_MASK | OF_MASK); /* Standard x86 spec always clears CF and OF */
+            }
+            break;
+        }
+
+        case 0x85: { /* TEST Ev, Gv - Test 16-bit Register against Memory/Register */
+            uint8_t modrm = *code_ptr;
+            ctx->ip++;
+            code_ptr++;
+
+            uint16_t* src = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+            uint16_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &code_ptr);
+
+            /* ENFORCED FIX: Strict memory safety trap for memory decoding faults */
+            if ((((modrm >> 6) & 0x03) != 3) && !dest) {
+                printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x85 execution at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                exit(139);
+            }
+
+            if (dest && src) {
+                uint32_t result = (uint32_t)*dest & *src;
+                cpu286_update_flags16(ctx, result);
+                ctx->flags &= ~(CF_MASK | OF_MASK); /* Standard x86 spec always clears CF and OF */
+            }
+            break;
+        }
 
 
                /* =========================================================================
          * ADVANCED WORD STRINGS & SCANNING (LODSW / SCASB) WITH FAULT TRAPPING
          * ========================================================================= */
         case 0xAD: { /* LODSW (Load Word from DS:SI into AX) */
-            uint16_t* src = (uint16_t*)mode16to32(ctx->ds, ctx->si);
-            if (!src) {
-                printf("\n[EMULATION FAULT] GPF(0): LODSW Segment Limit Exceeded at DS:SI = %04X:%04X\n", ctx->ds, ctx->si);
-                exit(139); /* Terminate execution with diagnostic trace instead of spamming */
-            }
-            ctx->ax = *src;
-            if (IS_DF_SET(ctx)) ctx->si -= 2; else ctx->si += 2;
-            break;
-        }
+                   /* Intel Protection Rule: Memory Access by Null Selectior gives GPF */
+                   if (ctx->ds == 0) {
+                       printf("\n[CRITICAL GPF] LODSW Attempted memory access through a Null DS Selector!\n");
+                       exit(139);
+                   }
+                   uint16_t* src = (uint16_t*)mode16to32(ctx->ds, ctx->si);
+                   if (!src) {
+                       printf("\n[CRITICAL GPF] LODSW Segment Limit Exceeded at DS:SI = %04X:%04X\n", ctx->ds, ctx->si);
+                       exit(139); /* Kill to avoid zombie cascade */
+                   }
+                   ctx->ax = *src;
+                   if (IS_DF_SET(ctx)) ctx->si -= 2; else ctx->si += 2;
+                   break;
+               }
         case 0xAE: { /* SCASB (Scan Byte: Compare AL with ES:DI memory) */
-            uint16_t current_es = (ctx->es == 0) ? ((2 << 3) | 3) : ctx->es;
-            uint8_t* dest = (uint8_t*)mode16to32(current_es, ctx->di);
+            uint8_t* dest = (uint8_t*)mode16to32(ctx->es, ctx->di);
             if (!dest) {
-                printf("\n[GPF Trap] SCASB Segment Limit Exceeded at ES:DI = %04X:%04X. Skipping.\n", ctx->es, ctx->di);
-                break; /* Advances to next instruction natively */
+                printf("\n[CRITICAL GPF] SCASB Segment Limit Exceeded or Null Selector at ES:DI = %04X:%04X\n", ctx->es, ctx->di);
+                exit(139); /* STOP! */
             }
             uint32_t res = (uint32_t)ctx->al - *dest;
             cpu286_update_flags8(ctx, res);
@@ -2044,8 +2398,39 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
         /* =========================================================================
-         * EXTENDED GROUP 5 SUB-OPCODES (GRP5 UPDATE)
+         * HISTORICAL ODDITIES & MISC COMPATIBILITY OPCODES (Opcodes 0x9E / 0x9F / 0xD5 / 0xF5)
          * ========================================================================= */
+        case 0x9E: { /* SAHF - Store AH into Flags (Lower 8-bits) */
+            /* Enforce strict bit masking matching the 8086/286 EFLAGS layout layout */
+            ctx->flags = (uint16_t)((ctx->flags & 0xFF00) | (ctx->ah & 0x00D5));
+            ctx->ip++;
+            break;
+        }
+
+        case 0x9F: { /* LAHF - Load Flags (Lower 8-bits) into AH */
+            ctx->ah = (uint8_t)(ctx->flags & 0x00D5);
+            ctx->ip++;
+            break;
+        }
+
+        case 0xD5: { /* AAD - ASCII Adjust before Division */
+            uint8_t base = *code_ptr; ctx->ip++; /* Default standard is 10 (0x0A) */
+            if (base == 0) {
+                printf("\n[CRITICAL CPU STOP] AAD Division by Zero operational boundary anomaly!\n");
+                exit(139);
+            }
+            ctx->al = (uint8_t)((ctx->ah * base) + ctx->al);
+            ctx->ah = 0x00;
+            cpu286_update_flags16(ctx, ctx->al);
+            break;
+        }
+
+        case 0xF5: { /* CMC - Complement Carry Flag */
+            ctx->flags ^= CF_MASK; /* Toggles the carry bit flag atomically */
+            ctx->ip++;
+            break;
+        }
+
 
         /* =========================================================================
          * BASIC 8-BIT COMPARISON & REVERSE DIRECTION LOGIC
