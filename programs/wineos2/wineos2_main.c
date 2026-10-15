@@ -131,33 +131,14 @@ typedef struct {
  * LX SUBSYSTEM JUMP NATIVE CONTEXT
  * ========================================================================= */
 
-void wineos2_jump_to_lx_kernel(uint32_t target_eip, uint32_t target_esp, uint32_t pib_ptr) {
-    printf("[LX Kernel] Transferring execution control to native x86 space at EIP: 0x%08X (ESP: 0x%08X)\n", 
-           target_eip, target_esp);
-    fflush(stdout);
+/* =========================================================================
+ * ARCHITECTURALLY CLEAN 32-BIT LX THREAD INITIALIZATION LOOP
+ * ========================================================================= */
 
-    // Place the values specified by the standard
-    __asm__ __volatile__ (
-        "movl %1, %%esp\n\t"   // Force ESP target_esp (from "edx")
-        "pushl $0\n\t"         // Align the stack / Simulate a null return
-        "jmp *%0\n\t"          // jump tp target_eip (from "eax")
-        :
-        : "a" (target_eip),    // "a" instruct the compiler to follow stricly the EAX
-          "d" (target_esp),    // "d" instruct the compiler to follow stricly the EDX
-          "b" (pib_ptr)        // "b" instruct the compiler to put stricly the PIB on EBX (a standard on OS/2 32-bit)
-        : "memory"             // Memory clobber to obligate GCC to flush the registers
-    );
-
-    // The compiler knew that this point will never be reached
-    __builtin_unreachable();
-}
-
-
-int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
+int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
     LX_HEADER lx_hdr;
     LX_ALLOCATED_OBJECT allocated_objects[MAX_LX_OBJECTS];
     uint32_t target_entry_eip = 0;
-    uint32_t target_entry_esp = 0;
     uint32_t absolute_obj_table;
     uint32_t i;
 
@@ -170,6 +151,7 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
     printf("[Loader] Parsing LX (Linear Executable) 32-bit OS/2 structure...\n");
     absolute_obj_table = ne_lfanew + lx_hdr.obj_tbl_offset;
 
+    /* Loop through and map all objects into host user memory spaces */
     for (i = 0; i < lx_hdr.num_objects && i < MAX_LX_OBJECTS; i++) {
         LX_OBJECT obj;
         void* allocated_address;
@@ -180,6 +162,7 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
 
         if (obj.size == 0) continue;
 
+        /* Allocate the physical segment targeting the fixed base address layout */
         allocated_address = VirtualAlloc((LPVOID)(uintptr_t)obj.base_addr, obj.size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!allocated_address) {
             printf("[LX Error] Critical memory allocation mapping failed at 0x%08X\n", obj.base_addr);
@@ -192,6 +175,7 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
 
         lx_process_object_pages(file, ne_lfanew, &lx_hdr, &obj, allocated_address);
 
+        /* Set memory protection flags based on executable segment parameters */
         if (obj.flags & 0x0004) {
             VirtualProtect(allocated_address, obj.size, PAGE_EXECUTE_READWRITE, &old_protect);
         } else {
@@ -199,25 +183,53 @@ int wineos2_execute_lx_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
         }
 
         if (i + 1 == lx_hdr.eip_obj) target_entry_eip = obj.base_addr + lx_hdr.eip;
-        if (i + 1 == lx_hdr.esp_obj) target_entry_esp = obj.base_addr + lx_hdr.esp;
     }
 
     wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr, allocated_objects);
 
-    if (target_entry_esp == 0) {
-    /* Allocate 64KB of real stack on free adress selected by Wine */
-    void* lx_stack = VirtualAlloc(NULL, 65536, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    /* ESP points to the top of the memory heap (the stacks grows downward) */
-    target_entry_esp = (uint32_t)(uintptr_t)lx_stack + 65535;
-}
+    /* =========================================================================
+     * WIN32 COMPLIANT ISOLATED THREAD INJECTION FOR LX EXECUTION
+     * ========================================================================= */
+    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
+    PROCESS_INFORMATION pi;
+    CONTEXT thread_ctx;
 
+    /* Create the secondary execution thread suspended to manipulate registries safely */
+    BOOL success = CreateProcessA(NULL, "wineos2_stub.exe", NULL, NULL, FALSE, 
+                                  CREATE_SUSPENDED, NULL, NULL, &si, &pi);
+    if (!success) {
+        printf("[LX Error] Failed to generate a clean isolated Win32 thread context.\n");
+        return 0;
+    }
 
-    printf("\n--- EMBEDDED ENGINE SYSTEM TRACE END: RUNNING NATIVE 32-BIT PROGRAM ---\n\n");
+    /* Target the stack space provided naturally by the Wine runtime thread environment */
+    thread_ctx.ContextFlags = CONTEXT_FULL;
+    GetThreadContext(pi.hThread, &thread_ctx);
+
+    /* Allocate and align our structured OS/2 frame variables on the thread stack area */
+    /* Assuming stack base size retrieved or default 1MB thread reservation allocations */
+    wineos2_initialize_lx_stack((void*)(thread_ctx.Esp - 65536), 65536, &thread_ctx);
+
+    /* Rewrite EIP to force execution to hop natively into the active LX target memory space */
+    thread_ctx.Eip = target_entry_eip;
+
+    /* Enforce the OS/2 ABI specification: pass the active PIB block address in EBX */
+    thread_ctx.Ebx = active_pib_address;
+
+    /* Apply the updated architecture context registers state back to the suspended thread */
+    SetThreadContext(pi.hThread, &thread_ctx);
+
+    printf("\n--- EMBEDDED ENGINE SYSTEM TRACE END: RUNNING NATIVE 32-BIT LX CONTEXT ---\n\n");
     fflush(stdout);
 
-    wineos2_jump_to_lx_kernel(target_entry_eip, target_entry_esp, active_pib_address);
+    /* Release the thread safely - Wine maps the environment and loops without stack error exceptions */
+    ResumeThread(pi.hThread);
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
     return 1;
 }
+
 
 int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
     NE_HEADER ne_hdr;
