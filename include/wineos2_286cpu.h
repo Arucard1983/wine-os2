@@ -1232,7 +1232,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 }
 
                 for (uint32_t i = 0; i < count; i++) {
-                    void* src_flat_ptr  = mode16to32(ctx->ds, ctx->SI_source_reg); /* Standard x86 uses DS:SI */
+                    void* src_flat_ptr  = mode16to32(ctx->ds, ctx->si);            /* Standard x86 uses DS:SI */
                     void* dest_flat_ptr = mode16to32(ctx->es, ctx->di);            /* Standard x86 uses ES:DI */
 
                     if (!src_flat_ptr || !dest_flat_ptr) {
