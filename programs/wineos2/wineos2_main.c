@@ -21,6 +21,8 @@ OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
 int lx_process_object_pages(FILE* file, uint32_t ne_base, void* hdr, void* obj, void* addr);
 int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr);
 int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, void* lx_hdr, void* allocated_objects);
+void wineos2_initialize_lx_stack(void* stack_ptr, uint32_t stack_size, CONTEXT* thread_ctx);
+
 
 /*
  * Bug Fix: Re-declaration of virtual_ldt removed from here.
@@ -35,38 +37,47 @@ int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, void* lx_hdr, void* 
  */
 
 /* OS/2 1.x / Win16 NE Header Structure */
+#pragma pack(push, 1)
 typedef struct {
-    uint8_t  magic[2];
-    uint8_t  linker_ver;
-    uint8_t  linker_rev;
-    uint16_t entry_offset;
-    uint16_t entry_size;
-    uint32_t crc;
-    uint16_t program_flags;
-    uint16_t auto_data_seg;
-    uint16_t heap_size;
-    uint16_t stack_size;
-    uint32_t cs_ip;
-    uint32_t ss_sp;
-    uint16_t seg_count;
-    uint16_t mod_count;
-    uint16_t nonres_size;
-    uint16_t seg_table;
-    uint16_t res_table;
-    uint16_t resid_name;
-    uint16_t mod_ref_table;
-    uint16_t import_name;
-    uint32_t nonres_table;
-    uint16_t movable_entry;
-    uint16_t logical_sector;
-    uint16_t resource_count;
-    uint8_t  target_os;
-    uint8_t  os2_flags;
-    uint16_t fast_load_off;
-    uint16_t fast_load_len;
-    uint16_t reserved;
-    uint16_t expected_win_ver;
+    uint8_t  magic[2];          /* 0x00: 'N', 'E' */
+    uint8_t  linker_ver;        /* 0x02 */
+    uint8_t  linker_rev;        /* 0x03 */
+    uint16_t entry_table_offset;/* 0x04: Relative to header NE */
+    uint16_t entry_table_length;/* 0x06 */
+    uint32_t crc;               /* 0x08 */
+    uint16_t program_flags;     /* 0x0C */
+    uint16_t auto_data_seg;     /* 0x0E */
+    uint16_t heap_size;         /* 0x10 */
+    uint16_t stack_size;        /* 0x12 */
+
+    uint16_t initial_ip;        /* 0x14 */
+    uint16_t initial_cs_seg;    /* 0x16 */
+
+    uint16_t initial_sp;        /* 0x18 */
+    uint16_t initial_ss_seg;    /* 0x1A */
+
+    uint16_t seg_count;         /* 0x1C */
+    uint16_t mod_count;         /* 0x1E */
+    uint16_t nonres_size;       /* 0x20 */
+    uint16_t seg_table;         /* 0x22 */
+    uint16_t res_table;         /* 0x24 */
+    uint16_t resid_name;        /* 0x26 */
+    uint16_t mod_ref_table;     /* 0x28 */
+    uint16_t import_name;       /* 0x2A */
+    uint32_t nonres_table;      /* 0x2C */
+    uint16_t movable_entry;     /* 0x30 */
+    uint16_t logical_sector;    /* 0x32 */
+    uint16_t resource_count;    /* 0x34 */
+    uint8_t  target_os;         /* 0x36: 1 = OS/2, 2 = Windows, 3 = European MS-DOS 4.0 */
+    uint8_t  os2_flags;         /* 0x37 */
+    uint16_t fast_load_off;     /* 0x38 */
+    uint16_t fast_load_len;     /* 0x3A */
+    uint16_t reserved;          /* 0x3C */
+    uint16_t expected_win_ver;  /* 0x3E */
 } NE_HEADER;
+#pragma pack(pop)
+
+
 
 /* OS/2 2.x+ LX (Linear Executable) Header Structure */
 typedef struct {
@@ -128,12 +139,12 @@ typedef struct {
 #pragma pack(pop)
 
 /* =========================================================================
- * LX SUBSYSTEM JUMP NATIVE CONTEXT
- * ========================================================================= */
-
-/* =========================================================================
  * ARCHITECTURALLY CLEAN 32-BIT LX THREAD INITIALIZATION LOOP
  * ========================================================================= */
+
+void wineos2_initialize_lx_stack(void* stack_ptr, uint32_t stack_size, CONTEXT* thread_ctx) {
+    fprintf(stderr, "[FIXME] wineos2_initialize_lx_stack not functional.\n");
+}
 
 int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
     LX_HEADER lx_hdr;
@@ -251,47 +262,31 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
         return 0;
     }
 
-        memset(&cpu_context, 0, sizeof(CPU286_Context));
-    
-    // FIX: Extract correctly the segment number and IP from cs_ip
-    uint16_t initial_seg_index = (uint16_t)((ne_hdr.cs_ip >> 16) & 0xFFFF);
-    uint16_t initial_ip        = (uint16_t)(ne_hdr.cs_ip & 0xFFFF);
+    memset(&cpu_context, 0, sizeof(CPU286_Context));
 
-    // Adjust LDT selector (index << 3) with RPL=3 for Ring 3
-    cpu_context.cs = (initial_seg_index << 3) | 3; 
-    cpu_context.ip = initial_ip;
+    cpu_context.cs = (ne_hdr.initial_cs_seg << 3) | 3;
+    cpu_context.ip = ne_hdr.initial_ip;
 
-    if (ne_hdr.ss_sp == 0) {
-        cpu_context.ss = (2 << 3) | 3; // Fallback to Segment #2
-        cpu_context.sp = 0xFFFE;
-    } else {
-        // FIX: Extract the initial stack segment and SP from ss_sp
-        uint16_t initial_stack_seg = (uint16_t)((ne_hdr.ss_sp >> 16) & 0xFFFF);
-        uint16_t initial_sp        = (uint16_t)(ne_hdr.ss_sp & 0xFFFF);
-        
-        cpu_context.ss = (initial_stack_seg << 3) | 3;
-        cpu_context.sp = initial_sp;
-    }
-
-
-
-    if (ne_hdr.ss_sp == 0) {
+    if (ne_hdr.initial_ss_seg == 0) {
         cpu_context.ss = (2 << 3) | 3;
         cpu_context.sp = 0xFFFE;
     } else {
-        cpu_context.ss = ((ne_hdr.ss_sp >> 16) << 3) | 3;
-        cpu_context.sp = ne_hdr.ss_sp & 0xFFFF;
+        cpu_context.ss = (ne_hdr.initial_ss_seg << 3) | 3;
+        cpu_context.sp = ne_hdr.initial_sp;
     }
 
     auto_data_selector = ne_hdr.auto_data_seg ? ((ne_hdr.auto_data_seg << 3) | 3) : cpu_context.ss;
+    cpu_context.ax = auto_data_selector;
+    cpu_context.ds = auto_data_selector;
+
     cpu_context.ax = auto_data_selector;
     cpu_context.ds = auto_data_selector;
     cpu_context.bx = 0x0100;
     cpu_context.cx = 0x4000;
     cpu_context.flags = 0x0202;
 
-    printf("\n[NE Loader] Reconstructed environment -> CS:IP = 0x%04X:0x%04X | Auto Data DS: 0x%04X\n",
-           cpu_context.cs, cpu_context.ip, cpu_context.ds);
+    printf("\n[NE Loader] Reconstructed environment -> CS:IP = 0x%04X:0x%04X | Auto Data DS: 0x%04X | SP: 0x%04X\n",
+           cpu_context.cs, cpu_context.ip, cpu_context.ds, cpu_context.sp);
     printf("--- EMBEDDED INTERPRETER SYSTEM TRACE END: LAUNCHING 286 EMULATOR ---\n\n");
     fflush(stdout);
 
@@ -301,12 +296,17 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
     return 1;
 }
 
+
+__declspec(dllexport) void* CDECL wineos2_get_ldt_ptr(void) {
+    return (void*)virtual_ldt;
+}
+
 /* Enforced Fix: Added param_bytes to match standard 286 far callgate descriptors */
 __declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr) {
     uint16_t i;
     for (i = 500; i < LDT_MAX_ENTRIES; i++) {
         if (!virtual_ldt[i].present) {
-            virtual_ldt[i].wine_thunk   = (uint16_t (*)(CPU286_Context*))thunk_ptr;
+            virtual_ldt[i].wine_thunk   = (uint32_t)thunk_ptr;
             virtual_ldt[i].limit        = ordinal;
             virtual_ldt[i].param_bytes  = param_bytes; /* Storing the Pascal stack frame footprint */
             virtual_ldt[i].present      = 1;
@@ -379,7 +379,7 @@ int main(int argc, char *argv[]) {
         wineos2_execute_ne_process(file, dos_header.e_lfanew, active_pib_address);
     }
     else if ((magic_sig[0] == 'L' && magic_sig[1] == 'X') || (magic_sig[0] == 'L' && magic_sig[1] == 'E')) {
-        wineos2_execute_lx_process(file, dos_header.e_lfanew, active_pib_address);
+        wineos2_execute_lx_process_win32(file, dos_header.e_lfanew, active_pib_address);
     }
     else {
         printf("Error: Unknown architecture signature (%c%c).\n", magic_sig[0], magic_sig[1]);
