@@ -39,13 +39,22 @@ typedef struct {
 #define LDT_TYPE_SEGMENT  0x01
 #define LDT_TYPE_CALLGATE 0x80
 
+uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal);
+uint16_t wineos2_register_callgate(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
+
 #define IS_ZF_SET(ctx) (((ctx)->flags & ZF_MASK) != 0)
 #define IS_SF_SET(ctx) (((ctx)->flags & SF_MASK) != 0)
 #define IS_CF_SET(ctx) (((ctx)->flags & CF_MASK) != 0)
 #define IS_DF_SET(ctx) (((ctx)->flags & DF_MASK) != 0)
 
 /* ENFORCED FIX: Prevent static encapsulation across multiple translation units */
+#ifdef WINEOS2_DLL_MODULE
+/* Inside a dll, point to resolved pointer in runtime */
+extern OS2_LDT_ENTRY* virtual_ldt;
+#else
+/* Inside the loader*/
 extern OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
+#endif
 
 /* CPU State Context (Ring 3 execution only) */
 struct struct_CPU286_Context {
