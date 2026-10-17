@@ -4,6 +4,7 @@
  */
 
 #define WIN32_LEAN_AND_MEAN
+#define WINEOS2_DLL_MODULE 
 #include <windows.h>
 #include <winternl.h> 
 #include <ntstatus.h> /* Standard header for STATUS_SUCCESS and STATUS_PENDING */
@@ -13,8 +14,11 @@
 #include "os2types.h"
 #include "wineos2_286cpu.h"
 
+OS2_LDT_ENTRY* virtual_ldt = NULL;
+
 /* ENFORCED FIX: Updated function pointer signature to mandate param_bytes for automated stack balancing */
 typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
+typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 
 /* Manual redeclarations of NTDLL functions */
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE handle, NTSTATUS exit_status);
@@ -162,12 +166,22 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
         HMODULE hCore;
         PFN_wineos2_register_callgate pfnRegister;
-
+        PFN_wineos2_get_ldt_ptr pfnGetLdt;
+        
         DisableThreadLibraryCalls(hinstDLL);
 
         /* Dynamically look up the master engine core executable/DLL entry */
         hCore = GetModuleHandleA(NULL); /* NULL resolves to the host process image, wineos2.exe */
         if (!hCore) return FALSE;
+        
+        /* Resolve the pointer from the global LDT table of executable*/
+        pfnGetLdt = (PFN_wineos2_get_ldt_ptr)GetProcAddress(hCore, "wineos2_get_ldt_ptr");
+        if (!pfnGetLdt) {
+            printf("[DOSCALLS] Error: Could not resolve wineos2_get_ldt_ptr dynamically.\n");
+            return FALSE;
+        }
+        /* Set the local pointer to the shared memory */
+        virtual_ldt = (OS2_LDT_ENTRY*)pfnGetLdt();
 
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) {
