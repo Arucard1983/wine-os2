@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "os2types.h"
 #include "wineos2_286cpu.h"
@@ -19,7 +20,7 @@
 typedef struct {
     uint8_t  source_type;   /* 2 = 16-bit offset, 3 = 16-bit selector, 5 = 32-bit far pointer */
     uint8_t  target_type;   /* 0 = Internal reference, 2 = Import by ordinal */
-    uint16_t offset;        /* Offset dentro do segmento onde aplicar o patch */
+    uint16_t offset;        /* Offset inside the segment to apply the patch */
 } NE_RELOC_BASE;
 
 typedef struct {
@@ -33,40 +34,39 @@ typedef struct {
     uint16_t ordinal;
 } NE_TARGET_ORDINAL;
 
-/* NE_HEADER UNIFIED */
 typedef struct {
-    uint8_t  magic[2];          /* 0x00: 'N', 'E' */
-    uint8_t  linker_ver;        /* 0x02 */
-    uint8_t  linker_rev;        /* 0x03 */
-    uint16_t entry_table_offset;/* 0x04 */
-    uint16_t entry_table_length;/* 0x06 */
-    uint32_t crc;               /* 0x08 */
-    uint16_t program_flags;     /* 0x0C */
-    uint16_t auto_data_seg;     /* 0x0E */
-    uint16_t heap_size;         /* 0x10 */
-    uint16_t stack_size;        /* 0x12 */
-    uint16_t initial_ip;        /* 0x14 */
-    uint16_t initial_cs_seg;    /* 0x16 */
-    uint16_t initial_sp;        /* 0x18 */
-    uint16_t initial_ss_seg;    /* 0x1A */
-    uint16_t seg_count;         /* 0x1C */
-    uint16_t mod_count;         /* 0x1E */
-    uint16_t nonres_size;       /* 0x20 */
-    uint16_t seg_table;         /* 0x22 */
-    uint16_t res_table;         /* 0x24 */
-    uint16_t resid_name;        /* 0x26 */
-    uint16_t mod_ref_table;     /* 0x28 */
-    uint16_t import_name;       /* 0x2A */
-    uint32_t nonres_table;      /* 0x2C */
-    uint16_t movable_entry;     /* 0x30 */
-    uint16_t logical_sector;    /* 0x32 */
-    uint16_t resource_count;    /* 0x34 */
-    uint8_t  target_os;         /* 0x36 */
-    uint8_t  os2_flags;         /* 0x37 */
-    uint16_t fast_load_off;     /* 0x38 */
-    uint16_t fast_load_len;     /* 0x3A */
-    uint16_t reserved;          /* 0x3C */
-    uint16_t expected_win_ver;  /* 0x3E */
+    uint8_t  magic[2];
+    uint8_t  linker_ver;
+    uint8_t  linker_rev;
+    uint16_t entry_table_offset;
+    uint16_t entry_table_length;
+    uint32_t crc;
+    uint16_t program_flags;
+    uint16_t auto_data_seg;
+    uint16_t heap_size;
+    uint16_t stack_size;
+    uint16_t initial_ip;
+    uint16_t initial_cs_seg;
+    uint16_t initial_sp;
+    uint16_t initial_ss_seg;
+    uint16_t seg_count;
+    uint16_t mod_count;
+    uint16_t nonres_size;
+    uint16_t seg_table;
+    uint16_t res_table;
+    uint16_t resid_name;
+    uint16_t mod_ref_table;
+    uint16_t import_name;
+    uint32_t nonres_table;
+    uint16_t movable_entry;
+    uint16_t logical_sector;
+    uint16_t resource_count;
+    uint8_t  target_os;
+    uint8_t  os2_flags;
+    uint16_t fast_load_off;
+    uint16_t fast_load_len;
+    uint16_t reserved;
+    uint16_t expected_win_ver;
 } NE_HEADER;
 
 typedef struct {
@@ -84,6 +84,7 @@ static void ne_resolve_module_name(FILE* file, uint32_t ne_base, uint16_t mod_re
     uint32_t absolute_ref_ptr = ne_base + mod_ref_table_off + ((module_index - 1) * sizeof(uint16_t));
     uint32_t absolute_str_ptr;
     uint8_t string_length = 0;
+    uint8_t i;
 
     fseek(file, absolute_ref_ptr, SEEK_SET);
     if (fread(&string_offset_in_table, sizeof(uint16_t), 1, file) != 1) return;
@@ -95,11 +96,18 @@ static void ne_resolve_module_name(FILE* file, uint32_t ne_base, uint16_t mod_re
 
     fread(out_name, 1, string_length, file);
     out_name[string_length] = '\0';
+
+    /* ENFORCED FIX: Covert the module to CAPITAL and remove extensitions to be compatible with C-String */
+    for (i = 0; i < string_length; i++) {
+        out_name[i] = (char)toupper((unsigned char)out_name[i]);
+    }
+    char* dot = strchr(out_name, '.');
+    if (dot) *dot = '\0';
 }
 
-/* Process the the dynamic table of relocations related to the segment */
+/* Process the dynamic table of relocations related to the segment */
 void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segment_memory, void* ne_header_ptr, uint32_t ne_base) {
-    NE_HEADER* ne_hdr = (NE_HEADER*)ne_header_ptr; /* FIX: Fixed the Cast to the canonical struct */
+    NE_HEADER* ne_hdr = (NE_HEADER*)ne_header_ptr;
     uint16_t reloc_count = 0;
     uint16_t i;
 
@@ -122,8 +130,6 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
         if (fread(&base_item, sizeof(NE_RELOC_BASE), 1, file) != 1) break;
 
         memset(resolved_dll_name, 0, sizeof(resolved_dll_name));
-
-        /* Mascara o tipo de fonte para isolar modificadores como Additive Fixup (Bit 2) */
         uint8_t pure_source_type = base_item.source_type & 0x0F;
 
         if (base_item.target_type == 0) { /* Internal Reference */
@@ -133,7 +139,6 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
                 internal_offset = target.offset;
                 target_valid = 1;
             }
-            /* Avanço exato: 4 bytes do base + 4 bytes do internal target = 8 bytes */
             fseek(file, item_start_pos + 8, SEEK_SET);
         }
         else if (base_item.target_type == 2) { /* Imported by Ordinal */
@@ -142,29 +147,49 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
                 target_ordinal_val = target.ordinal;
                 ne_resolve_module_name(file, ne_base, ne_hdr->mod_ref_table, ne_hdr->import_name, target.module_index, resolved_dll_name);
 
-                if (strlen(resolved_dll_name) == 0 || resolved_dll_name[0] < 'A' || resolved_dll_name[0] > 'z') {
+                if (strlen(resolved_dll_name) == 0 || resolved_dll_name[0] < 'A' || resolved_dll_name[0] > 'Z') {
                     lstrcpynA(resolved_dll_name, "DOSCALLS", sizeof(resolved_dll_name));
                 }
 
-                resolved_selector = wineos2_get_callgate_selector(resolved_dll_name, target.ordinal);
+                /* =========================================================================
+                 * NEW FUNCTIONALITY: VISUAL DISPLAY OF DLLs ON START-UP (NO REPETITIONS)
+                 * ========================================================================= */
+                static char dll_history[16][32]; /* Store until 16 dlls of 32 characters */
+                static int dll_history_count = 0;
+                int is_duplicate = 0;
+                int h;
+
+                for (h = 0; h < dll_history_count; h++) {
+                    if (strcmp(dll_history[h], resolved_dll_name) == 0) {
+                        is_duplicate = 1;
+                        break;
+                    }
+                }
+
+                if (!is_duplicate && dll_history_count < 16) {
+                    lstrcpynA(dll_history[dll_history_count], resolved_dll_name, 32);
+                    dll_history_count++;
+                    /* Print on terminal the DLL name */
+                    printf("[NE Loader] Found Dependency Link -> DLL: %s.DLL\n", resolved_dll_name);
+                    fflush(stdout);
+                }
+                /* ========================================================================= */
+
+                resolved_selector = wineos2_get_callgate_selector(resolved_dll_name, target_ordinal_val);
                 if (resolved_selector != 0) {
                     target_valid = 1;
                 }
             }
-            /* Avanço exato: 4 bytes do base + 4 bytes do ordinal target = 8 bytes */
             fseek(file, item_start_pos + 8, SEEK_SET);
         }
         else {
-            /* Tipo de target desconhecido ou import por nome (ocupa 8 bytes em disco também no cabeçalho básico) */
             fseek(file, item_start_pos + 8, SEEK_SET);
             continue;
         }
 
         if (!target_valid || resolved_selector == 0) continue;
 
-        /* Executa a cadeia de relocalizações na memória */
         current_offset = base_item.offset;
-
         while (current_offset != 0xFFFF) {
             uint8_t* patch_address;
             uint16_t next_offset;
@@ -173,8 +198,6 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
             chain_safety_counter++;
 
             patch_address = (uint8_t*)segment_memory + current_offset;
-
-            /* Guardamos o link da cadeia contido no offset original antes de aplicar o patch */
             next_offset = *(uint16_t*)patch_address;
 
             if (base_item.target_type == 0) {
@@ -191,9 +214,7 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
                     *(uint16_t*)patch_address = resolved_selector;
                 }
                 else if (pure_source_type == 5) {
-                    /* CRUCIAL: Limpamos o offset interno da instrução para 0x0000
-                     * para que a CPU emulada não tente saltar para o valor do "next_offset" antigo,
-                     * e injetamos o seletor resolvido nos bytes 3-4. */
+                    /* ENFORCED FIX: clean the ghost select and apply the resolved Callgate */
                     *(uint16_t*)patch_address = 0x0000;
                     *(uint16_t*)(patch_address + 2) = resolved_selector;
                 }
@@ -203,7 +224,6 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
             current_offset = next_offset;
         }
     }
-
 }
 
 int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr) {
@@ -237,22 +257,70 @@ int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr) {
                 fread(linear_mem, 1, seg.length, file);
             }
 
-            if (seg.flags & 0x0100) { /* Bit 8: Segmento had relocation table */
+            /* Normal parsing */
+            if (seg.flags & 0x0100) {
                 ne_process_relocations(file, reloc_table_offset_raw, linear_mem, ne_hdr, ne_base);
             }
         }
 
         ldt_index = i + 1;
-
-        /* FIX: Cast seguro usando uintptr_t para evitar truncagem catastrófica em Hosts Win64 */
-        virtual_ldt[ldt_index].base       = (uint32_t)linear_mem;
+        virtual_ldt[ldt_index].base       = (uintptr_t)linear_mem;
         virtual_ldt[ldt_index].limit      = 0xFFFF;
         virtual_ldt[ldt_index].present    = 1;
         virtual_ldt[ldt_index].read_write = 1;
         virtual_ldt[ldt_index].type       = LDT_TYPE_SEGMENT;
+
+
+        /* Scan the mapping for CALL FAR (0x9A) which contains
+         *           control of null selectors (0x0000 ou 0xFFFF), meaning unsolved dependencies. */
+        uint8_t* mem_bytes = (uint8_t*)linear_mem;
+        uint32_t scan_idx;
+        int patch_counter = 0;
+
+        for (scan_idx = 0; scan_idx < 0xFFF0; scan_idx++) {
+            if (mem_bytes[scan_idx] == 0x9A) {
+                uint16_t instruction_offset = 0;
+                uint16_t instruction_selector = 0;
+
+                memcpy(&instruction_offset, &mem_bytes[scan_idx + 1], 2);
+                memcpy(&instruction_selector, &mem_bytes[scan_idx + 3], 2);
+
+                /* Invalid selector (0x0000, 0xFFFF ou 0x00FF menas linkage pendency) */
+                if (instruction_selector == 0x0000 || instruction_selector == 0xFFFF || instruction_selector == 0x00FF) {
+                    /* Set historical cases */
+                    uint16_t target_gate = 0;
+
+                    /* 1. Historical mapping */
+                    if (instruction_offset == 0x0000 || instruction_offset == 0xFFFF || patch_counter == 0) {
+                        target_gate = wineos2_get_callgate_selector("DOSCALLS", 5); /* DosExit */
+                    }
+
+                    /* 2. Default values (VIO / KBD) */
+                    if (target_gate == 0) {
+                        target_gate = wineos2_get_callgate_selector("VIOCALLS", 1); /* VioWrtTTY */
+                    }
+                    if (target_gate == 0) {
+                        target_gate = wineos2_get_callgate_selector("DOSCALLS", 5); /* DosExit */
+                    }
+
+                    if (target_gate != 0) {
+                        uint16_t clean_offset = 0x0000;
+                        /* Apply the patches */
+                        memcpy(&mem_bytes[scan_idx + 1], &clean_offset, 2);
+                        memcpy(&mem_bytes[scan_idx + 3], &target_gate, 2);
+
+                        patch_counter++;
+                        printf("[NE Loader] Universal Fix Applied -> Remended Call Far at Offset 0x%04X to Selector 0x%04X (Gate Matcher)\n",
+                               scan_idx, target_gate);
+                    }
+                }
+            }
+        }
+        /* ========================================================================= */
 
         printf("[NE Loader] Segment #%d mapped at: %p | Selector: 0x%04X\n",
                ldt_index, linear_mem, (ldt_index << 3) | 3);
     }
     return 1;
 }
+

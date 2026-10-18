@@ -23,61 +23,43 @@ int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr);
 int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, void* lx_hdr, void* allocated_objects);
 void wineos2_initialize_lx_stack(void* stack_ptr, uint32_t stack_size, CONTEXT* thread_ctx);
 
-
-/*
- * Bug Fix: Re-declaration of virtual_ldt removed from here.
- * The included "wineos2_286cpu.h" header already allocates the static global LDT array context instance.
- */
-
 #pragma pack(push, 1)
-
-/*
- * Bug Fix: IMAGE_DOS_HEADER struct definition removed from here.
- * The standard <windows.h> (via <winnt.h>) already provides this official Win32 layout structure natively.
- */
 
 /* OS/2 1.x / Win16 NE Header Structure */
-#pragma pack(push, 1)
 typedef struct {
-    uint8_t  magic[2];          /* 0x00: 'N', 'E' */
-    uint8_t  linker_ver;        /* 0x02 */
-    uint8_t  linker_rev;        /* 0x03 */
-    uint16_t entry_table_offset;/* 0x04: Relative to header NE */
-    uint16_t entry_table_length;/* 0x06 */
-    uint32_t crc;               /* 0x08 */
-    uint16_t program_flags;     /* 0x0C */
-    uint16_t auto_data_seg;     /* 0x0E */
-    uint16_t heap_size;         /* 0x10 */
-    uint16_t stack_size;        /* 0x12 */
-
-    uint16_t initial_ip;        /* 0x14 */
-    uint16_t initial_cs_seg;    /* 0x16 */
-
-    uint16_t initial_sp;        /* 0x18 */
-    uint16_t initial_ss_seg;    /* 0x1A */
-
-    uint16_t seg_count;         /* 0x1C */
-    uint16_t mod_count;         /* 0x1E */
-    uint16_t nonres_size;       /* 0x20 */
-    uint16_t seg_table;         /* 0x22 */
-    uint16_t res_table;         /* 0x24 */
-    uint16_t resid_name;        /* 0x26 */
-    uint16_t mod_ref_table;     /* 0x28 */
-    uint16_t import_name;       /* 0x2A */
-    uint32_t nonres_table;      /* 0x2C */
-    uint16_t movable_entry;     /* 0x30 */
-    uint16_t logical_sector;    /* 0x32 */
-    uint16_t resource_count;    /* 0x34 */
-    uint8_t  target_os;         /* 0x36: 1 = OS/2, 2 = Windows, 3 = European MS-DOS 4.0 */
-    uint8_t  os2_flags;         /* 0x37 */
-    uint16_t fast_load_off;     /* 0x38 */
-    uint16_t fast_load_len;     /* 0x3A */
-    uint16_t reserved;          /* 0x3C */
-    uint16_t expected_win_ver;  /* 0x3E */
+    uint8_t  magic[2];
+    uint8_t  linker_ver;
+    uint8_t  linker_rev;
+    uint16_t entry_table_offset;
+    uint16_t entry_table_length;
+    uint32_t crc;
+    uint16_t program_flags;
+    uint16_t auto_data_seg;
+    uint16_t heap_size;
+    uint16_t stack_size;
+    uint16_t initial_ip;
+    uint16_t initial_cs_seg;
+    uint16_t initial_sp;
+    uint16_t initial_ss_seg;
+    uint16_t seg_count;
+    uint16_t mod_count;
+    uint16_t nonres_size;
+    uint16_t seg_table;
+    uint16_t res_table;
+    uint16_t resid_name;
+    uint16_t mod_ref_table;
+    uint16_t import_name;
+    uint32_t nonres_table;
+    uint16_t movable_entry;
+    uint16_t logical_sector;
+    uint16_t resource_count;
+    uint8_t  target_os;
+    uint8_t  os2_flags;
+    uint16_t fast_load_off;
+    uint16_t fast_load_len;
+    uint16_t reserved;
+    uint16_t expected_win_ver;
 } NE_HEADER;
-#pragma pack(pop)
-
-
 
 /* OS/2 2.x+ LX (Linear Executable) Header Structure */
 typedef struct {
@@ -105,7 +87,6 @@ typedef struct {
     uint32_t obj_map_offset;
 } LX_HEADER;
 
-/* LX Object Table Entry Descriptor */
 typedef struct {
     uint32_t size;
     uint32_t base_addr;
@@ -122,25 +103,20 @@ typedef struct {
     uint32_t size;
 } LX_ALLOCATED_OBJECT;
 
-/* OS/2 1.x / Win16 NE Segment Relocation Entry Descriptor */
 typedef struct {
-    uint8_t  source_type;   /* 1 = LOBYTE, 2 = SEGMENT, 3 = FAR_POINTER (offset+selector) */
-    uint8_t  target_flags;  /* 0 = Internal, 1 = Imported by Ordinal, 2 = Imported by Name */
-    uint16_t source_offset; /* Offset location inside the segment data to apply the patch */
-    
+    uint8_t  source_type;
+    uint8_t  target_flags;
+    uint16_t source_offset;
+
     union {
         struct {
-            uint16_t module_index; /* Index inside the Module Reference Table */
-            uint16_t ordinal;      /* Function Ordinal number  */
+            uint16_t module_index;
+            uint16_t ordinal;
         } imported_ordinal;
     } target;
 } NE_RELOCATION_ENTRY;
 
 #pragma pack(pop)
-
-/* =========================================================================
- * ARCHITECTURALLY CLEAN 32-BIT LX THREAD INITIALIZATION LOOP
- * ========================================================================= */
 
 void wineos2_initialize_lx_stack(void* stack_ptr, uint32_t stack_size, CONTEXT* thread_ctx) {
     fprintf(stderr, "[FIXME] wineos2_initialize_lx_stack not functional.\n");
@@ -162,7 +138,6 @@ int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t ac
     printf("[Loader] Parsing LX (Linear Executable) 32-bit OS/2 structure...\n");
     absolute_obj_table = ne_lfanew + lx_hdr.obj_tbl_offset;
 
-    /* Loop through and map all objects into host user memory spaces */
     for (i = 0; i < lx_hdr.num_objects && i < MAX_LX_OBJECTS; i++) {
         LX_OBJECT obj;
         void* allocated_address;
@@ -173,7 +148,6 @@ int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t ac
 
         if (obj.size == 0) continue;
 
-        /* Allocate the physical segment targeting the fixed base address layout */
         allocated_address = VirtualAlloc((LPVOID)(uintptr_t)obj.base_addr, obj.size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!allocated_address) {
             printf("[LX Error] Critical memory allocation mapping failed at 0x%08X\n", obj.base_addr);
@@ -186,7 +160,6 @@ int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t ac
 
         lx_process_object_pages(file, ne_lfanew, &lx_hdr, &obj, allocated_address);
 
-        /* Set memory protection flags based on executable segment parameters */
         if (obj.flags & 0x0004) {
             VirtualProtect(allocated_address, obj.size, PAGE_EXECUTE_READWRITE, &old_protect);
         } else {
@@ -198,49 +171,34 @@ int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t ac
 
     wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr, allocated_objects);
 
-    /* =========================================================================
-     * WIN32 COMPLIANT ISOLATED THREAD INJECTION FOR LX EXECUTION
-     * ========================================================================= */
     STARTUPINFOA si = { sizeof(STARTUPINFOA) };
     PROCESS_INFORMATION pi;
     CONTEXT thread_ctx;
 
-    /* Create the secondary execution thread suspended to manipulate registries safely */
-    BOOL success = CreateProcessA(NULL, "wineos2_stub.exe", NULL, NULL, FALSE, 
+    BOOL success = CreateProcessA(NULL, "wineos2_stub.exe", NULL, NULL, FALSE,
                                   CREATE_SUSPENDED, NULL, NULL, &si, &pi);
     if (!success) {
         printf("[LX Error] Failed to generate a clean isolated Win32 thread context.\n");
         return 0;
     }
 
-    /* Target the stack space provided naturally by the Wine runtime thread environment */
     thread_ctx.ContextFlags = CONTEXT_FULL;
     GetThreadContext(pi.hThread, &thread_ctx);
 
-    /* Allocate and align our structured OS/2 frame variables on the thread stack area */
-    /* Assuming stack base size retrieved or default 1MB thread reservation allocations */
     wineos2_initialize_lx_stack((void*)(thread_ctx.Esp - 65536), 65536, &thread_ctx);
-
-    /* Rewrite EIP to force execution to hop natively into the active LX target memory space */
     thread_ctx.Eip = target_entry_eip;
-
-    /* Enforce the OS/2 ABI specification: pass the active PIB block address in EBX */
     thread_ctx.Ebx = active_pib_address;
 
-    /* Apply the updated architecture context registers state back to the suspended thread */
     SetThreadContext(pi.hThread, &thread_ctx);
 
     printf("\n--- EMBEDDED ENGINE SYSTEM TRACE END: RUNNING NATIVE 32-BIT LX CONTEXT ---\n\n");
     fflush(stdout);
 
-    /* Release the thread safely - Wine maps the environment and loops without stack error exceptions */
     ResumeThread(pi.hThread);
-
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     return 1;
 }
-
 
 int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
     NE_HEADER ne_hdr;
@@ -268,22 +226,43 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
     cpu_context.ip = ne_hdr.initial_ip;
 
     if (ne_hdr.initial_ss_seg == 0) {
-        cpu_context.ss = (2 << 3) | 3;
+        cpu_context.ss = 0x0013;
         cpu_context.sp = 0xFFFE;
     } else {
         cpu_context.ss = (ne_hdr.initial_ss_seg << 3) | 3;
         cpu_context.sp = ne_hdr.initial_sp;
     }
 
-    auto_data_selector = ne_hdr.auto_data_seg ? ((ne_hdr.auto_data_seg << 3) | 3) : cpu_context.ss;
-    cpu_context.ax = auto_data_selector;
-    cpu_context.ds = auto_data_selector;
+    /* ENFORCED FIX: Fix the bug of SP=0x0000 on start-up to avoid fake Stack Overflow */
+    if (cpu_context.sp == 0x0000) {
+        cpu_context.sp = 0xFFFE;
+    }
 
+    auto_data_selector = 0x0013;
     cpu_context.ax = auto_data_selector;
     cpu_context.ds = auto_data_selector;
     cpu_context.bx = 0x0100;
     cpu_context.cx = 0x4000;
     cpu_context.flags = 0x0202;
+
+    uint16_t required_idx = 0x0013 >> 3; /* Índice 2 */
+    if (!virtual_ldt[required_idx].present) {
+        void* data_mem = VirtualAlloc(NULL, 0x10000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!data_mem) {
+            printf("[NE Loader Error] Failed to allocate automatic data segment space.\n");
+            return 0;
+        }
+        memset(data_mem, 0, 0x10000);
+
+        virtual_ldt[required_idx].base       = (uintptr_t)data_mem;
+        virtual_ldt[required_idx].limit      = 0xFFFF;
+        virtual_ldt[required_idx].present    = 1;
+        virtual_ldt[required_idx].read_write = 1;
+        virtual_ldt[required_idx].type       = LDT_TYPE_SEGMENT;
+
+        printf("[NE Loader] Emergency LDT Alloc -> Created Data/Stack Segment at: %p | Selector: 0x0013\n",
+               data_mem);
+    }
 
     printf("\n[NE Loader] Reconstructed environment -> CS:IP = 0x%04X:0x%04X | Auto Data DS: 0x%04X | SP: 0x%04X\n",
            cpu_context.cs, cpu_context.ip, cpu_context.ds, cpu_context.sp);
@@ -296,22 +275,20 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
     return 1;
 }
 
-
 __declspec(dllexport) void* CDECL wineos2_get_ldt_ptr(void) {
     return (void*)virtual_ldt;
 }
 
-/* Enforced Fix: Added param_bytes to match standard 286 far callgate descriptors */
 __declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr) {
     uint16_t i;
     for (i = 500; i < LDT_MAX_ENTRIES; i++) {
         if (!virtual_ldt[i].present) {
-            virtual_ldt[i].wine_thunk   = (uint32_t)thunk_ptr;
+            virtual_ldt[i].wine_thunk   = (uintptr_t)thunk_ptr; /* FIXED: Correct casting using uintptr_t */
             virtual_ldt[i].limit        = ordinal;
-            virtual_ldt[i].param_bytes  = param_bytes; /* Storing the Pascal stack frame footprint */
+            virtual_ldt[i].param_bytes  = param_bytes;
             virtual_ldt[i].present      = 1;
             virtual_ldt[i].type         = LDT_TYPE_CALLGATE;
-            
+
             if (mod_name) {
                 lstrcpynA(virtual_ldt[i].mod_name, mod_name, sizeof(virtual_ldt[i].mod_name));
             } else {
@@ -323,26 +300,23 @@ __declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_n
     return 0;
 }
 
-
 uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
     uint16_t i;
     for (i = 500; i < LDT_MAX_ENTRIES; i++) {
-        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE && 
+        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE &&
             virtual_ldt[i].limit == ordinal && strcmp(virtual_ldt[i].mod_name, mod_name) == 0) {
             return (i << 3) | 3;
-        }
-    } /* Enforced fix: Correctly closed the for-loop context scope here */
+            }
+    }
     return 0;
 }
 
-
-/* Stable ANSI main entry point matching classical architecture standard requirements */
 int main(int argc, char *argv[]) {
     IMAGE_DOS_HEADER dos_header;
     uint8_t magic_sig[2];
     FILE *file;
     uint32_t active_pib_address = 0;
-    
+
     if (argc < 2) {
         printf("Usage: wineos2.exe <target_os2_file.exe>\n");
         return 1;
@@ -359,7 +333,6 @@ int main(int argc, char *argv[]) {
         fclose(file);
         return 1;
     }
-
     if (fseek(file, dos_header.e_lfanew, SEEK_SET) != 0 || fread(magic_sig, 1, 2, file) != 2) {
         printf("Error: Missing extended header alignment.\n");
         fclose(file);
@@ -368,13 +341,11 @@ int main(int argc, char *argv[]) {
     printf("==================================================\n");
     printf("  WINEOS2 EXECUTIVE UNIFIED LOADER (Win32 Target) \n");
     printf("==================================================\n");
-
     if (!wineos2_setup_lx_environment(&active_pib_address)) {
         printf("Error: Failed to initialize OS/2 simulation environment.\n");
         fclose(file);
         return 1;
     }
-    
     if (magic_sig[0] == 'N' && magic_sig[1] == 'E') {
         wineos2_execute_ne_process(file, dos_header.e_lfanew, active_pib_address);
     }
