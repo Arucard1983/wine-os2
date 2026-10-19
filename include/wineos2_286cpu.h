@@ -14,9 +14,9 @@
 struct CPU286_Context;
 typedef struct struct_CPU286_Context CPU286_Context;
 
-/* 286 Segment Descriptor (Protected Mode) - 64-bit Host Compliant */
+/* 286 Segment Descriptor (Protected Mode) - 32-bit Host Compliant */
 typedef struct {
-    uintptr_t base;      /* 64-bit linear base address in modern Host/Wine space */
+    uint32_t base;      /* 64-bit linear base address in modern Host/Wine space */
     uint32_t limit;      /* Segment limit (Maximum of 64KB for 286) */
     uint8_t  present;    /* Segment presence flag in virtual memory */
     uint8_t  read_write; /* Kept for loader backward compatibility */
@@ -77,7 +77,7 @@ struct struct_CPU286_Context {
     uint16_t seg_override;
 };
 
-/* Helper to convert 16-bit segmented address to 64-bit flat pointer cleanly */
+/* Helper to convert 16-bit segmented address to 32-bit flat pointer cleanly */
 static inline void* mode16to32(uint16_t selector, uint16_t offset) {
     uint16_t index = selector >> 3; /* Extract LDT index */
 
@@ -89,9 +89,9 @@ static inline void* mode16to32(uint16_t selector, uint16_t offset) {
     }
 
     /* Force full 64-bit unsigned arithmetic to prevent integer truncation */
-    uint64_t linear_address = (uint64_t)virtual_ldt[index].base + (uint64_t)offset;
+    uint32_t linear_address = virtual_ldt[index].base + (uint32_t)offset;
     
-    return (void*)(uintptr_t)linear_address;
+    return (void*)linear_address;
 }
 
 /* Helper to convert 64-bit flat pointer back to 16-bit segmented address */
@@ -561,40 +561,63 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     break;
                 }
 
-        case 0x8E: { /* MOV segreg, Ew (Move Memory/Register to Segment Register) */
-            uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
-            uint16_t* dest = cpu286_get_seg_reg(ctx, (modrm >> 3) & 0x07);
-            uint16_t* src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
-            if (dest && src) {
-                *dest = *src;
-                /* If ES or DS are loaded with a valid selector, ensure the compiler
-                 * runtime can utilize them immediately without throwing spurious null traps */
-                if (dest == &ctx->es && ctx->es == 0x0000) {
-                    /* Safe fallback alignment for stubs that read command arguments */
-                    ctx->es = (2 << 3) | 3; /* Fallback to Automatic Data Segment */
+                case 0x8E: { /* MOV segreg, Ew (Move Memory/Register to Segment Register) */
+                    uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
+                    uint16_t* dest = cpu286_get_seg_reg(ctx, (modrm >> 3) & 0x07);
+                    uint16_t* src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+                    if (dest && src) {
+                        /* =========================================================================
+                         * ENFORCED FIX: Protecting the 16-bit Protected Mode DS/ES selectors
+                         * ========================================================================= */
+                        uint16_t incoming_selector = *src;
+
+
+                        if (dest == &ctx->ds || dest == &ctx->es) {
+                            uint16_t idx = incoming_selector >> 3;
+                            if (idx >= LDT_MAX_ENTRIES || !virtual_ldt[idx].present) {
+                                incoming_selector = (2 << 3) | 3; // Force 0x0013 (Segment #2)
+                            }
+                        }
+
+                        *dest = incoming_selector;
+
+                        if (dest == &ctx->es && ctx->es == 0x0000) {
+                            ctx->es = (2 << 3) | 3;
+                        }
+                    }
+                    break;
                 }
-            }
-            break;
-        }
+
 
 
         case 0x9A: { /* CALL far ptr16:16 - FULLY FIXED FOR 16-BIT ENGINES */
             uint16_t target_offset = 0;
             uint16_t target_selector = 0;
 
-            /* FIXED: Safe  memcpy use to avoid garbage alignement on certain hosts */
-            memcpy(&target_offset, args_ptr, 2);
-            memcpy(&target_selector, args_ptr + 2, 2);
+            uint8_t* raw_ram_ptr = (uint8_t*)mode16to32(ctx->cs, ctx->ip);
+
+            printf("\n[CPU DEBUG 9A] Executing Call Far at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip);
+            if (raw_ram_ptr) {
+                printf("  -> Raw Bytes in RAM at pointer %p: %02X %02X %02X %02X %02X\n",
+                       (void*)raw_ram_ptr, raw_ram_ptr[-1], raw_ram_ptr[0], raw_ram_ptr[1], raw_ram_ptr[2], raw_ram_ptr[3]);
+            } else {
+                printf("  -> [CRITICAL] mode16to32 returned NULL for CS:IP!\n");
+            }
+            fflush(stdout);
+            /* ========================================================================= */
+
+            /* FIXED: Safe memcpy use to avoid garbage alignment on certain hosts. Also due to static linkage the offset and and selector are swapped */
+            memcpy(&target_offset, args_ptr + 2, 2);
+            memcpy(&target_selector, args_ptr + 0, 2);
 
             /* Sync and consume the remaining 4-bytes from the host stream */
             args_ptr += 4;
-            ctx->ip += 4;
+            ctx->ip += 4; // ctx->ip now points to the next CALL
 
             /* =========================================================================
-             * DYNAMIC RELOCATION INTERCEPT (FIX FOR SELECTOR 0x00FF / 0xFFFF)
+             * DYNAMIC RELOCATION INTERCEPT (FIX FOR SELECTOR 0x00FF / 0xFFFF / 0x0000)
              * ========================================================================= */
             if (target_selector == 0x00FF || target_selector == 0xFFFF || target_selector == 0x0000) {
-                /* FIX ENFORCED: Adding support to 0x0000 to capture the missiing fixups on guest program */
                 uint16_t mock_ordinal = target_offset;
                 uint16_t resolved_gate = wineos2_get_callgate_selector("DOSCALLS", mock_ordinal);
 
@@ -608,15 +631,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         exit(139);
                     }
                 }
-            }
-
-            /* Intercept potential dynamic LDT layout selection anomalies */
-            if (target_selector == 0x30AE || target_selector == 0x0001 || (target_selector >> 3) >= LDT_MAX_ENTRIES) {
-                printf("[LDT Recovery] Intercepted invalid target selector 0x%04X.\n", target_selector);
-                ctx->ax = 0;
-                ctx->ip = 0x1485; /* Direct route to the patch point of DosExit */
-                target_selector = ctx->cs;
-                break;
             }
 
             uint16_t ldt_index = target_selector >> 3;
@@ -636,15 +650,26 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 fflush(stdout);
 
                 if (virtual_ldt[ldt_index].wine_thunk) {
-                    /* Protection: Store the stack return values using x86 standards */
-                    cpu286_push16(ctx, ctx->cs);
-                    cpu286_push16(ctx, ctx->ip);
+                    /* 1. Preserve the return adress of OS/2 guest */
+                    uint16_t return_cs = ctx->cs;
+                    uint16_t return_ip = ctx->ip;
 
-                    /* Call the C bridge of Wine */
+                    /* 2. Simulate the real stack frame before the thunk */
+                    cpu286_push16(ctx, return_cs);
+                    cpu286_push16(ctx, return_ip);
+
+                    /* 3. Call the C function of Wine */
                     uint16_t api_result = virtual_ldt[ldt_index].wine_thunk(ctx);
                     ctx->ax = api_result;
 
-                    /* Pascal Strict alignement: simulate the resources been freed by API */
+                    /* 4. pascal return:
+                     * All parameters are above the frame(ctx->sp + 4).
+                     * After C function return, it is needed to undo the push and the pascal parameters.
+                     */
+                    ctx->ip = return_ip; // Return the flags to the next instruction
+                    ctx->cs = return_cs;
+
+                    // Clean the CS:IP of stack (+4) and advanced the request number of bytes by the API
                     ctx->sp += 4 + virtual_ldt[ldt_index].param_bytes;
                 } else {
                     printf("[API TRACE WARNING] Unimplemented OS/2 CallGate: Selector 0x%04X (Ordinal %u)\n",
@@ -661,6 +686,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             }
             break;
         }
+
 
 
 
@@ -1696,6 +1722,24 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             /* =========================================================================
              * DATA MOVEMENT (MOV ABSOLUTE / EXCHANGE) - FIXED
              * ========================================================================= */
+            case 0xA2: { /* MOV moffs8, AL (Write AL to absolute 16-bit offset memory) */
+                uint16_t offset = 0;
+                /* Atomic Extraction to avoid host misalignements */
+                memcpy(&offset, args_ptr, 2);
+                ctx->ip += 2;
+                args_ptr += 2; /* Sync to adjust the program flow*/
+
+                uint8_t* dest = (uint8_t*)mode16to32(ctx->ds, offset);
+                if (dest) {
+                    *dest = ctx->al; /* Pass the data content to target */
+                } else {
+                    printf("[CPU FAULT] MOV moffs8, AL: Target memory resolved to NULL\n");
+                    exit(139);
+                }
+                break;
+            }
+
+
             case 0xA3: { /* MOV Ov, AX (Write AX to absolute 16-bit offset memory) */
                 uint16_t offset = 0;
                 /* FIXED: using memcpy to avoid host misalignments */
