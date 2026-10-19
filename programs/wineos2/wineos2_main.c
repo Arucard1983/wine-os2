@@ -25,6 +25,12 @@ void wineos2_initialize_lx_stack(void* stack_ptr, uint32_t stack_size, CONTEXT* 
 
 #pragma pack(push, 1)
 
+typedef struct {
+    uint8_t magic[2];      // 'MZ' (0x5A4D)
+    uint8_t  e_reserved[58];
+    uint32_t e_lfanew;     // Absolute offset for NE head
+} DOS_Header;
+
 /* OS/2 1.x / Win16 NE Header Structure */
 typedef struct {
     uint8_t  magic[2];
@@ -264,6 +270,25 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
                data_mem);
     }
 
+    printf("\n--- LDT CHECKUP (Searching active callgates) ---\n");
+    int callgates_found = 0;
+    for (int idx = 0; idx < LDT_MAX_ENTRIES; idx++) {
+        // Check if the selector is a CALLGATE (or a name)
+        if (virtual_ldt[idx].present && virtual_ldt[idx].type == LDT_TYPE_CALLGATE) {
+            printf("  LDT Entry [%d] -> Mod: '%s' | Ordinal: #%d | Target Thunk: %p\n",
+                   idx, virtual_ldt[idx].mod_name, virtual_ldt[idx].limit, (void*)virtual_ldt[idx].wine_thunk);
+            callgates_found++;
+        }
+    }
+    if (callgates_found == 0) {
+        printf("[FAIL] LDT is totally EMPTY of Callgates!\n");
+    } else {
+        printf("[INFO] Found  %d callgates regited.\n", callgates_found);
+    }
+    printf("----------------------------------------------------------------\n\n");
+    fflush(stdout);
+
+
     printf("\n[NE Loader] Reconstructed environment -> CS:IP = 0x%04X:0x%04X | Auto Data DS: 0x%04X | SP: 0x%04X\n",
            cpu_context.cs, cpu_context.ip, cpu_context.ds, cpu_context.sp);
     printf("--- EMBEDDED INTERPRETER SYSTEM TRACE END: LAUNCHING 286 EMULATOR ---\n\n");
@@ -311,6 +336,10 @@ uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
     return 0;
 }
 
+/*  clear wine cache  */
+extern void wineos2_free_module_cache(void);
+
+/* Main */
 int main(int argc, char *argv[]) {
     IMAGE_DOS_HEADER dos_header;
     uint8_t magic_sig[2];
@@ -346,6 +375,7 @@ int main(int argc, char *argv[]) {
         fclose(file);
         return 1;
     }
+
     if (magic_sig[0] == 'N' && magic_sig[1] == 'E') {
         wineos2_execute_ne_process(file, dos_header.e_lfanew, active_pib_address);
     }
@@ -356,6 +386,7 @@ int main(int argc, char *argv[]) {
         printf("Error: Unknown architecture signature (%c%c).\n", magic_sig[0], magic_sig[1]);
     }
     printf("==================================================\n");
+    wineos2_free_module_cache();
     fclose(file);
     return 0;
 }
