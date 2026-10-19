@@ -1160,6 +1160,11 @@ static HRESULT WINAPI domdoc_createNode(IXMLDOMDocument3 *iface, VARIANT type, B
         return hr;
     }
 
+    if (node_type == NODE_ELEMENT)
+    {
+        domnode->flags |= DOMNODE_USE_EMPTY_TAG;
+    }
+
     return create_node(domnode, node);
 }
 
@@ -1389,9 +1394,7 @@ static HRESULT WINAPI domdoc_get_parseError(IXMLDOMDocument3 *iface, IXMLDOMPars
     if (doc->error)
         error_string = SysAllocString(L"error");
 
-    *obj = create_parseError(doc->error, NULL, error_string, NULL, 0, 0, 0);
-    if (!*obj) return E_OUTOFMEMORY;
-    return S_OK;
+    return create_parse_error(doc->error, error_string, obj);
 }
 
 static HRESULT WINAPI domdoc_get_url(IXMLDOMDocument3 *iface, BSTR *url)
