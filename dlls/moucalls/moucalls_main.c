@@ -22,6 +22,25 @@ typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
  * 32-BIT NATIVE CORES (LX Subsystem - Raw Bootstrap Mock Layer)
  * ========================================================================= */
 
+APIRET CDECL os2_MouGetNumButtons(PVOID pResult, HMOU hmou) {
+    PUSHORT pButtons = (PUSHORT)pResult;
+    
+    if (!pButtons) {
+        return 87; /* ERROR_INVALID_PARAMETER from OS/2 */
+    }
+
+    /* GetSystemMetrics return the number of buttos from the host */
+    *pButtons = (USHORT)GetSystemMetrics(SM_CMOUSEBUTTONS);
+
+    /* To avoid a OS/2 hard failure, the absence of a mouse will place a fake one with two buttons */
+    if (*pButtons == 0) {
+        *pButtons = 2; 
+    }
+
+    return NO_ERROR; /* 0 */
+}
+
+
 APIRET CDECL os2_MouGetPtrPos(PVOID pCursorPos, HMOU hmou) {
     if (!pCursorPos) return 87;
     memset(pCursorPos, 0, 4); 
@@ -31,6 +50,39 @@ APIRET CDECL os2_MouGetPtrPos(PVOID pCursorPos, HMOU hmou) {
 /* =========================================================================
  * 16-BIT EMULATED CORES (NE Subsystem - Corrected Stack Offsets & Pascal Cleanup)
  * ========================================================================= */
+
+uint16_t os2_Mou16GetNumButtons(CPU286_Context* ctx) {
+    /* 16-bit Pascal stack with the following:
+     * [SS:SP + 4] -> Selector of Far Pointer (pResult)
+     * [SS:SP + 2] -> Offset of Far Pointer (pResult)
+     * [SS:SP + 0] -> Handle og Rato (hmou)
+     */
+    uint16_t sp_offset = ctx->sp + 4; 
+    uint16_t pResult_sel;
+    uint16_t pResult_off;
+    uint16_t hmou;
+    void* host_ptr;
+    APIRET rc;
+
+    /* Extract the parameters from the emulated stack */
+    pResult_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    pResult_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    hmou        = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    /* Convert the segment stack to a linear space of 32-bits */
+    host_ptr = mode16to32(pResult_sel, pResult_off);
+    if (!host_ptr) {
+        return 87; /* ERROR_INVALID_PARAMETER */
+    }
+
+    /* Call the native function */
+    rc = os2_MouGetNumButtons(host_ptr, (HMOU)hmou);
+
+    /* The DllMain will clear the 6 bytes of stack (Far Ptr = 4 bytes + Handle = 2 bytes) */
+    return (uint16_t)rc;
+}
+
+
 
 uint16_t os2_Mou16GetPtrPos(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4; 
@@ -49,7 +101,7 @@ uint16_t os2_Mou16GetPtrPos(CPU286_Context* ctx) {
 
     rc = os2_MouGetPtrPos(host_pos, (HMOU)hmou);
     
-    /* FIX: 'ctx->sp += 6' REMOVIDO. Agora é controlado pelo param_bytes da chamada 0x9A do Core! */
+    /* FIX: The stack is cleared by the emulator using the core parameters */
     return (uint16_t)rc;
 }
 
@@ -74,8 +126,9 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) return FALSE;
 
-        /* Ordinal 4. Parâmetros: 1 Far Pointer (4 bytes) + 1 Handle (2 bytes) = 6 bytes */
+        /* Ordinal 4. Parameters: 1 Far Pointer (4 bytes) + 1 Handle (2 bytes) = 6 bytes */
         pfnRegister("MOUCALLS", 4, 6, os2_Mou16GetPtrPos);
+        pfnRegister("MOUCALLS", 8, 6, os2_Mou16GetNumButtons);
 
         printf("[Moucalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
