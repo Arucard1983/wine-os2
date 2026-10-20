@@ -7,6 +7,6 @@
 
 
 # 32-bit Native OS/2 APIs (LX) - Called natively by 32-bit flat binaries
-119 cdecl VioWrtTTY(ptr long long) os2_VioWrtTTY
-121 cdecl VioGetMode(ptr long long) os2_VioGetMode
-164 cdecl VioQueryFonts(ptr ptr ptr long ptr str long) os2_VioQueryFonts
+10019 cdecl VioWrtTTY(ptr long long) os2_VioWrtTTY
+10021 cdecl VioGetMode(ptr long long) os2_VioGetMode
+10064 cdecl VioQueryFonts(ptr ptr ptr long ptr str long) os2_VioQueryFonts
