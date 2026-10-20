@@ -25,24 +25,24 @@
 151 cdecl Dos16SearchPath(ptr) os2_Dos16SearchPath
 
 # 32-bit Native OS/2 APIs (LX) - Mapped correctly with standard architecture types
-49  cdecl DosGetMachineMode(long) os2_DosGetMachineMode
-75  cdecl DosQueryFileMode(long long) os2_DosQueryFileMode
-84  cdecl DosSetFileMode(long long) os2_DosSetFileMode
-89  cdecl DosSetVec(long long) os2_DosSetVec
-218 cdecl DosSetFileInfo(long long) os2_DosSetFileInfo
-224 cdecl DosDosQueryHType(long long) os2_DosQueryHType
-228 cdecl DosSearchPath(long long) os2_DosSearchPath
-234 cdecl DosExit(long long) os2_DosExit
-256 cdecl DosSetFilePtr(long long) os2_DosSetFilePtr
-257 cdecl DosClose(long long) os2_DosClose
-259 cdecl DosDelete(long long) os2_DosDelete
-264 cdecl DosFindFirst(long long) os2_DosFindFirt
-265 cdecl DosFindNext(long long) os2_DosFindNext
-272 cdecl DosSetFileSize(long long) os2_SetFileSize
-273 cdecl DosOpen(long long) os2_DosOpen
-279 cdecl DosDosQueryFileInfo(long long) os2_DosQueryFileInfo
-281 cdecl DosRead(long ptr long ptr) os2_DosRead
-282 cdecl DosWrite(long ptr long ptr) os2_DosWrite
-283 cdecl DosExecPgm(long ptr long ptr) os2_DosExecPgm
-299 cdecl DosAllocMem(long ptr long ptr long ptr) os2_DosAllocMem
-348 cdecl DosQuerySysInfo(long ptr long ptr long ptr) os2_DosQuerySysInfo
+10049  cdecl DosGetMachineMode(long) os2_DosGetMachineMode
+10075  cdecl DosQueryFileMode(long long) os2_DosQueryFileMode
+10084  cdecl DosSetFileMode(long long) os2_DosSetFileMode
+10089  cdecl DosSetVec(long long) os2_DosSetVec
+10218  cdecl DosSetFileInfo(long long) os2_DosSetFileInfo
+10224  cdecl DosDosQueryHType(long long) os2_DosQueryHType
+10228  cdecl DosSearchPath(long long) os2_DosSearchPath
+10234  cdecl DosExit(long long) os2_DosExit
+10256  cdecl DosSetFilePtr(long long) os2_DosSetFilePtr
+10257  cdecl DosClose(long long) os2_DosClose
+10259  cdecl DosDelete(long long) os2_DosDelete
+10264  cdecl DosFindFirst(long long) os2_DosFindFirt
+10265  cdecl DosFindNext(long long) os2_DosFindNext
+10272  cdecl DosSetFileSize(long long) os2_SetFileSize
+10273  cdecl DosOpen(long long) os2_DosOpen
+10279  cdecl DosDosQueryFileInfo(long long) os2_DosQueryFileInfo
+10281  cdecl DosRead(long ptr long ptr) os2_DosRead
+10282  cdecl DosWrite(long ptr long ptr) os2_DosWrite
+10283  cdecl DosExecPgm(long ptr long ptr) os2_DosExecPgm
+10299  cdecl DosAllocMem(long ptr long ptr long ptr) os2_DosAllocMem
+10348  cdecl DosQuerySysInfo(long ptr long ptr long ptr) os2_DosQuerySysInfo
