@@ -8,8 +8,8 @@
 42  cdecl Kbd16FlushBuffer(ptr) os2_Kbd16FlushBuffer
 
 # 32-bit Native OS/2 APIs (LX) - Called natively by 32-bit flat binaries
-104 cdecl KbdCharIn(long long) os2_KbdCharIn
-109 cdecl KbdStringIn(ptr ptr long) os2_KbdStringIn
-111 cdecl KbdSetStatus(ptr long) os2_KbdSetStatus
-110 cdecl KbdGetStaus(ptr long) os2_KbdGetStatus
-113 cdecl KbdFlushBuffer(ptr) os2_KbdFlushBuffer
+10004 cdecl KbdCharIn(long long) os2_KbdCharIn
+10009 cdecl KbdStringIn(ptr ptr long) os2_KbdStringIn
+10011 cdecl KbdSetStatus(ptr long) os2_KbdSetStatus
+10010 cdecl KbdGetStaus(ptr long) os2_KbdGetStatus
+10013 cdecl KbdFlushBuffer(ptr) os2_KbdFlushBuffer
