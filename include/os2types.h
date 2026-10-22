@@ -31,6 +31,9 @@ typedef ULONG          HMOU;     /* MOU handle */
 typedef void          *PVOID;
 typedef CHAR          *PCH;
 typedef CHAR          *PCHAR;
+typedef char          *PSZ;
+
+#pragma pack(push, 1)
 
 /* 4. VIDEO INPUT/OUTPUT (VIO) STRUCTURES */
 typedef struct _VIOCURSORINFO {
@@ -53,6 +56,15 @@ typedef struct _VIOMODEINFO {
     ULONG  buf_addr; /* Physical address of videobuffer */
 } VIOMODEINFO, *PVIOMODEINFO;
 
+typedef struct _VIOFONTINFO {
+    USHORT cb;
+    USHORT type;
+    USHORT cxCell;
+    USHORT cyCell;
+    PVOID  pFontData;
+    USHORT cBytes;
+} VIOFONTINFO, *PVIOFONTINFO;
+
 /* 5. KEYBOARD (KBD) STRUCTURES */
 typedef struct _KBDKEYINFO {
     UCHAR  chChar;    /* ASCII character code */
@@ -62,6 +74,19 @@ typedef struct _KBDKEYINFO {
     USHORT fsState;   /* Shift, Ctrl, Alt key states */
     ULONG  time;      /* Event timestamp */
 } KBDKEYINFO, *PKBDKEYINFO;
+
+typedef struct _STRINGINBUF {
+    USHORT cb;        /* Maximum buffer length allocated by app */
+    USHORT cchIn;     /* Number of bytes read (returned) */
+} STRINGINBUF, *PSTRINGINBUF;
+
+typedef struct _KBDSTATUS {
+    USHORT cb;        /* Structure size */
+    USHORT fsMask;    /* Action mask */
+    USHORT chTurnAround; /* Turnaround character */
+    USHORT fsInterim; /* Interim console flags */
+    USHORT fsState;   /* Shift/Ctrl/Alt state flags */
+} KBDSTATUS, *PKBDSTATUS;
 
 /* =========================================================================
  * 32-BIT OS/2 PROCESS INFORMATION BLOCK (PIB) STRUCT
@@ -75,6 +100,8 @@ typedef struct _OS2_PIB {
     ULONG  pib_flstatus;   /* Process status flags */
     ULONG  pib_ultype;     /* Process type (0 = VIO Window, 1 = PM, etc.) */
 } OS2_PIB, *POS2_PIB;
+
+#pragma pack(pop)
 
 
 #endif /* __WINE_OS2TYPES_H */
