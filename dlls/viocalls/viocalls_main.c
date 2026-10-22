@@ -71,10 +71,10 @@ uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
     char* host_string;
     APIRET rc;
     
-    cbString  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    pStr_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    hvia_val  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    pStr_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    cbString  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    hvio_val  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
 
     host_string = (char*)mode16to32(pStr_sel, pStr_off);
     if (!host_string) return 87; /* ERROR_INVALID_PARAMETER */
