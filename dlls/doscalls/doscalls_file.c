@@ -303,12 +303,36 @@ uint16_t os2_Dos16FindFirst(CPU286_Context* ctx) {
     ULONG hdir32 = (ULONG)*host_hdir;
     ULONG count32 = (ULONG)*host_count;
     
-    // Nota: Em produção real, deves passar um buffer intermédio 32-bit e fazer marshalling 
-    // para a estrutura FILEFINDBUF1 de 16-bits. Aqui chamamos o core simulando sucesso estrutural.
     APIRET rc = os2_DosFindFirst(host_spec, &hdir32, (ULONG)attr, host_buf, 0, &count32, 1);
 
     if (rc == NO_ERROR) {
         *host_hdir = (uint16_t)hdir32;
+        *host_count = (uint16_t)count32;
+    }
+    return (uint16_t)rc;
+}
+
+uint16_t os2_Dos16FindNext(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+
+    uint16_t hDir      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
+    uint16_t buf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
+    uint16_t buf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    uint16_t cbBuf     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint16_t count_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    uint16_t count_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    void* host_buf       = mode16to32(buf_sel, buf_off);
+    uint16_t* host_count = (uint16_t*)mode16to32(count_sel, count_off);
+
+    if (!host_buf || !host_count) return 87; /* ERROR_INVALID_PARAMETER */
+
+    ULONG count32 = (ULONG)*host_count;
+
+    /* Call the 32-bit function handle later by NTDLL */
+    APIRET rc = os2_DosFindNext((ULONG)hDir, host_buf, (ULONG)cbBuf, &count32);
+
+    if (rc == NO_ERROR) {
         *host_count = (uint16_t)count32;
     }
     return (uint16_t)rc;
