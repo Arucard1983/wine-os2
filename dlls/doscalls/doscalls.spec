@@ -1,5 +1,7 @@
 # doscalls.spec - OS/2 Core Subsystem Ordinal Mapping using NTDLL Backends
 
+# doscalls.spec - OS/2 Core Subsystem Ordinal Mapping using NTDLL Backends
+
 # 16-bit Legacy OS/2 APIs (NE) - Handled as generic callbacks receiving the CPU context pointer
 5   cdecl Dos16Exit(ptr) os2_Dos16Exit
 34  cdecl Dos16Allocseg(ptr) os2_Dos16Allocseg
@@ -12,10 +14,10 @@
 65  cdecl Dos16FindNext(ptr) os2_Dos16FindNext
 68  cdecl Dos16NewSize(ptr) os2_Dos16NewSize
 70  cdecl Dos16Open(ptr) os2_Dos16Open
-74  cdecl Dos16QFHansState(ptr) os2_Dos16QFHandState
+74  cdecl Dos16QFHandState(ptr) os2_Dos16QFHandState
 75  cdecl Dos16QFileMode(ptr) os2_Dos16QFileMode
 77  cdecl Dos16QHandType(ptr) os2_Dos16QHandType
-83  cdecl Dos16SetFileINfo(ptr) os2_Dos16SetFileInfo
+83  cdecl Dos16SetFileInfo(ptr) os2_Dos16SetFileInfo
 84  cdecl Dos16SetFileMode(ptr) os2_Dos16SetFileMode
 89  cdecl Dos16SetVec(ptr) os2_Dos16SetVec
 92  cdecl Dos16GetVersion(ptr) os2_Dos16GetVersion
@@ -30,17 +32,17 @@
 10084  cdecl DosSetFileMode(long long) os2_DosSetFileMode
 10089  cdecl DosSetVec(long long) os2_DosSetVec
 10218  cdecl DosSetFileInfo(long long) os2_DosSetFileInfo
-10224  cdecl DosDosQueryHType(long long) os2_DosQueryHType
+10224  cdecl DosQueryHType(long long) os2_DosQueryHType
 10228  cdecl DosSearchPath(long long) os2_DosSearchPath
 10234  cdecl DosExit(long long) os2_DosExit
 10256  cdecl DosSetFilePtr(long long) os2_DosSetFilePtr
 10257  cdecl DosClose(long long) os2_DosClose
 10259  cdecl DosDelete(long long) os2_DosDelete
-10264  cdecl DosFindFirst(long long) os2_DosFindFirt
+10264  cdecl DosFindFirst(long long) os2_DosFindFirst
 10265  cdecl DosFindNext(long long) os2_DosFindNext
-10272  cdecl DosSetFileSize(long long) os2_SetFileSize
+10272  cdecl DosSetFileSize(long long) os2_DosSetFileSize
 10273  cdecl DosOpen(long long) os2_DosOpen
-10279  cdecl DosDosQueryFileInfo(long long) os2_DosQueryFileInfo
+10279  cdecl DosQueryFileInfo(long long) os2_DosQueryFileInfo
 10281  cdecl DosRead(long ptr long ptr) os2_DosRead
 10282  cdecl DosWrite(long ptr long ptr) os2_DosWrite
 10283  cdecl DosExecPgm(long ptr long ptr) os2_DosExecPgm
