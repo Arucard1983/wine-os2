@@ -21,6 +21,8 @@ NTSYSAPI NTSTATUS NTAPI RtlAnsiStringToUnicodeString(PUNICODE_STRING Destination
 NTSYSAPI VOID     NTAPI RtlFreeUnicodeString(PUNICODE_STRING UnicodeString);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length, FILE_INFORMATION_CLASS FileInformationClass);
 NTSYSAPI NTSTATUS NTAPI NtQueryDirectoryFile(HANDLE FileHandle, HANDLE Event, PIO_APC_ROUTINE ApcRoutine, PVOID ApcContext, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length, FILE_INFORMATION_CLASS FileInformationClass, BOOLEAN ReturnSingleEntry, PUNICODE_STRING FileName, BOOLEAN RestartScan);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length, FILE_INFORMATION_CLASS FileInformationClass);
+NTSYSAPI NTSTATUS NTAPI NtSetInformationFile(HANDLE FileHandle, PIO_STATUS_BLOCK IoStatusBlock, PVOID FileInformation, ULONG Length, FILE_INFORMATION_CLASS FileInformationClass);
 
 /* Auxiliary function to convert DOS paths (which OS/2 also uses) to Wine handles natively */
 static BOOL resolve_os2_path_via_wine(const char* os2_path, POBJECT_ATTRIBUTES poa, PUNICODE_STRING pus) {
@@ -220,7 +222,178 @@ APIRET CDECL os2_DosFindNext(ULONG hDir, PVOID pFindBuf, ULONG cbFindBuf, PULONG
     return 18; /* ERROR_NO_MORE_FILES */
 }
 
+APIRET CDECL os2_DosSetFilePtr(ULONG hFile, LONG ib, ULONG method, PULONG ibActual) {
+    IO_STATUS_BLOCK io_status;
+    NTSTATUS status;
+    FILE_POSITION_INFORMATION pos_info;
+    HANDLE nt_handle = (HANDLE)(uintptr_t)hFile;
 
+    if (hFile <= 2) return 1; /* ERROR_INVALID_FUNCTION on standard consoles */
+
+    /* Find the source of request (OS/2 to NT) */
+    if (method == 0) {       /* FILE_BEGIN */
+        pos_info.CurrentByteOffset.QuadPart = ib;
+    } else if (method == 1) { /* FILE_CURRENT */
+        FILE_POSITION_INFORMATION curr_pos;
+        status = NtQueryInformationFile(nt_handle, &io_status, &curr_pos, sizeof(curr_pos), FilePositionInformation);
+        if (status != STATUS_SUCCESS) return 6; /* ERROR_INVALID_HANDLE */
+        pos_info.CurrentByteOffset.QuadPart = curr_pos.CurrentByteOffset.QuadPart + ib;
+    } else if (method == 2) { /* FILE_END */
+        FILE_STANDARD_INFORMATION std_info;
+        status = NtQueryInformationFile(nt_handle, &io_status, &std_info, sizeof(std_info), FileStandardInformation);
+        if (status != STATUS_SUCCESS) return 6;
+        pos_info.CurrentByteOffset.QuadPart = std_info.EndOfFile.QuadPart + ib;
+    } else {
+        return 87; /* ERROR_INVALID_PARAMETER */
+    }
+
+    /* Sync the current file structure to the Wine using NTDLL */
+    status = NtSetInformationFile(nt_handle, &io_status, &pos_info, sizeof(pos_info), FilePositionInformation);
+    
+    if (status == STATUS_SUCCESS) {
+        if (ibActual) *ibActual = (ULONG)pos_info.CurrentByteOffset.QuadPart;
+        return NO_ERROR;
+    }
+    return 6; /* ERROR_INVALID_HANDLE */
+}
+
+APIRET CDECL os2_DosSetFileSize(ULONG hFile, ULONG cbSize) {
+    IO_STATUS_BLOCK io_status;
+    FILE_END_OF_FILE_INFORMATION eof_info;
+    NTSTATUS status;
+    HANDLE nt_handle = (HANDLE)(uintptr_t)hFile;
+
+    if (hFile <= 2) return 5; /* ERROR_ACCESS_DENIED */
+
+    eof_info.EndOfFile.QuadPart = cbSize;
+    
+    /* Force the file size using Kernel/NTDLL */
+    status = NtSetInformationFile(nt_handle, &io_status, &eof_info, sizeof(eof_info), FileEndOfFileInformation);
+    
+    return (status == STATUS_SUCCESS) ? NO_ERROR : 5;
+}
+
+APIRET CDECL os2_DosQueryFileInfo(ULONG hFile, ULONG ulInfoLevel, PVOID pBuf, ULONG cbBuf) {
+    IO_STATUS_BLOCK io_status;
+    NTSTATUS status;
+    HANDLE nt_handle = (HANDLE)(uintptr_t)hFile;
+
+    if (!pBuf || cbBuf == 0) return 87; /* ERROR_INVALID_PARAMETER */
+
+    if (ulInfoLevel == 1) { /* FIL_STANDARD */
+        FILE_STANDARD_INFORMATION std_info;
+        FILE_BASIC_INFORMATION bas_info;
+        status = NtQueryInformationFile(nt_handle, &io_status, &std_info, sizeof(std_info), FileStandardInformation);
+        if (status != STATUS_SUCCESS) return 6;
+        
+        status = NtQueryInformationFile(nt_handle, &io_status, &bas_info, sizeof(bas_info), FileBasicInformation);
+        if (status != STATUS_SUCCESS) return 6;
+
+        // Simulated writing using internal buffers
+        memset(pBuf, 0, cbBuf);
+        *(ULONG*)((BYTE*)pBuf + 12) = (ULONG)std_info.EndOfFile.QuadPart; // cbFile
+        *(ULONG*)((BYTE*)pBuf + 20) = (ULONG)bas_info.FileAttributes;    // attrFile
+        return NO_ERROR;
+    }
+    return 124; /* ERROR_INVALID_LEVEL */
+}
+
+APIRET CDECL os2_DosQueryFileMode(const char* pszFileName, PULONG pulAttribute, ULONG ulReserved) {
+    OBJECT_ATTRIBUTES oa;
+    UNICODE_STRING us;
+    IO_STATUS_BLOCK io_status;
+    FILE_BASIC_INFORMATION bas_info;
+    NTSTATUS status;
+    HANDLE hFile;
+
+    if (!pszFileName || !pulAttribute) return 87;
+    if (!resolve_os2_path_via_wine(pszFileName, &oa, &us)) return 2;
+
+    status = NtOpenFile(&hFile, FILE_READ_ATTRIBUTES | SYNCHRONIZE, &oa, &io_status,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_SYNCHRONOUS_IO_NONALERT);
+    RtlFreeHeap(GetProcessHeap(), 0, us.Buffer);
+
+    if (status != STATUS_SUCCESS) return 2; /* ERROR_FILE_NOT_FOUND */
+
+    status = NtQueryInformationFile(hFile, &io_status, &bas_info, sizeof(bas_info), FileBasicInformation);
+    NtClose(hFile);
+
+    if (status == STATUS_SUCCESS) {
+        *pulAttribute = (ULONG)bas_info.FileAttributes;
+        return NO_ERROR;
+    }
+    return 5;
+}
+
+APIRET CDECL os2_DosSetFileMode(const char* pszFileName, ULONG ulAttribute, ULONG ulReserved) {
+    OBJECT_ATTRIBUTES oa;
+    UNICODE_STRING us;
+    IO_STATUS_BLOCK io_status;
+    FILE_BASIC_INFORMATION bas_info;
+    NTSTATUS status;
+    HANDLE hFile;
+
+    if (!pszFileName) return 87;
+    if (!resolve_os2_path_via_wine(pszFileName, &oa, &us)) return 2;
+
+    status = NtOpenFile(&hFile, FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, &oa, &io_status,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_SYNCHRONOUS_IO_NONALERT);
+    RtlFreeHeap(GetProcessHeap(), 0, us.Buffer);
+
+    if (status != STATUS_SUCCESS) return 2;
+
+    memset(&bas_info, 0, sizeof(bas_info));
+    bas_info.FileAttributes = ulAttribute;
+
+    status = NtSetInformationFile(hFile, &io_status, &bas_info, sizeof(bas_info), FileBasicInformation);
+    NtClose(hFile);
+
+    return (status == STATUS_SUCCESS) ? NO_ERROR : 5;
+}
+
+APIRET CDECL os2_DosSetFileInfo(ULONG hFile, ULONG ulInfoLevel, PVOID pBuf, ULONG cbBuf) {
+    IO_STATUS_BLOCK io_status;
+    FILE_BASIC_INFORMATION bas_info;
+    NTSTATUS status;
+    HANDLE nt_handle = (HANDLE)(uintptr_t)hFile;
+
+    if (!pBuf || cbBuf == 0) return 87;
+    if (ulInfoLevel != 1) return 124; /* Apenas nível standard de timestamps */
+
+    memset(&bas_info, 0, sizeof(bas_info));
+    // OS/2 maps data stamps using structs. Pass as null (0)
+    // to signal NT to use current time or original time
+    status = NtSetInformationFile(nt_handle, &io_status, &bas_info, sizeof(bas_info), FileBasicInformation);
+    
+    return (status == STATUS_SUCCESS) ? NO_ERROR : 5;
+}
+
+APIRET CDECL os2_DosQueryHType(ULONG hFile, PULONG pulHandleType, PULONG pulFlagWord) {
+    IO_STATUS_BLOCK io_status;
+    FILE_FS_DEVICE_INFORMATION fs_dev;
+    NTSTATUS status;
+    HANDLE nt_handle = (HANDLE)(uintptr_t)hFile;
+
+    if (!pulHandleType || !pulFlagWord) return 87;
+
+    if (hFile <= 2) {
+        *pulHandleType = 1; /* Character handle (Console/VIO) */
+        *pulFlagWord = 0;
+        return NO_ERROR;
+    }
+
+    status = NtQueryVolumeInformationFile(nt_handle, &io_status, &fs_dev, sizeof(fs_dev), FileFsDeviceInformation);
+    if (status == STATUS_SUCCESS) {
+        if (fs_dev.DeviceType == FILE_DEVICE_DISK || fs_dev.DeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
+            *pulHandleType = 0; /* File handle */
+        } else {
+            *pulHandleType = 1; /* Other kind of hardware */
+        }
+        *pulFlagWord = 0;
+        return NO_ERROR;
+    }
+    return 6; /* ERROR_INVALID_HANDLE */
+}
 /* =========================================================================
  * 16-BIT EMULATED CORES (NE Subsystem File Operations Marshalling)
  * ========================================================================= */
@@ -338,3 +511,120 @@ uint16_t os2_Dos16FindNext(CPU286_Context* ctx) {
     return (uint16_t)rc;
 }
 
+uint16_t os2_Dos16ChgFilePtr(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+
+    uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
+    int32_t  ib         = *(int32_t*)mode16to32(ctx->ss, sp_offset + 6); /* Deslocamento de 32-bits sinalizado */
+    uint16_t method     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint16_t ibAct_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    uint16_t ibAct_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    uint32_t* host_actual = (uint32_t*)mode16to32(ibAct_sel, ibAct_off);
+    ULONG actual32 = 0;
+
+    if (!host_actual) return 87;
+
+    APIRET rc = os2_DosSetFilePtr((ULONG)hFile, (LONG)ib, (ULONG)method, &actual32);
+    
+    if (rc == NO_ERROR) {
+        *host_actual = (uint32_t)actual32;
+    }
+    return (uint16_t)rc;
+}
+
+uint16_t os2_Dos16NewSize(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+
+    uint16_t hFile  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint32_t cbSize = *(uint32_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    APIRET rc = os2_DosSetFileSize((ULONG)hFile, (ULONG)cbSize);
+    return (uint16_t)rc;
+}
+
+uint16_t os2_Dos16QFHandState(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+    uint16_t hFile     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint16_t pStat_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    uint16_t pStat_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t* host_state = (uint16_t*)mode16to32(pStat_sel, pStat_off);
+
+    if (!host_state) return 87;
+    
+    // Return default mode
+    *host_state = 0x0000; 
+    return 0;
+}
+
+uint16_t os2_Dos16QFileMode(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+    uint16_t name_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
+    uint16_t name_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
+    uint16_t attr_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    uint16_t attr_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint32_t reserved  = *(uint32_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    const char* host_name = (const char*)mode16to32(name_sel, name_off);
+    uint16_t* host_attr   = (uint16_t*)mode16to32(attr_sel, attr_off);
+    ULONG attr32 = 0;
+
+    if (!host_name || !host_attr) return 87;
+
+    APIRET rc = os2_DosQueryFileMode(host_name, &attr32, reserved);
+    if (rc == NO_ERROR) *host_attr = (uint16_t)attr32;
+    return (uint16_t)rc;
+}
+
+uint16_t os2_Dos16SetFileMode(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+    uint16_t name_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
+    uint16_t name_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    uint16_t attr     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint32_t reserved = *(uint32_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    const char* host_name = (const char*)mode16to32(name_sel, name_off);
+    if (!host_name) return 87;
+
+    APIRET rc = os2_DosSetFileMode(host_name, (ULONG)attr, reserved);
+    return (uint16_t)rc;
+}
+
+uint16_t os2_Dos16SetFileInfo(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+    uint16_t hFile     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
+    uint16_t level     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    uint16_t buf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint16_t buf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    uint16_t cbBuf     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    void* host_buf = mode16to32(buf_sel, buf_off);
+    if (!host_buf) return 87;
+
+    APIRET rc = os2_DosSetFileInfo((ULONG)hFile, (ULONG)level, host_buf, (ULONG)cbBuf);
+    return (uint16_t)rc;
+}
+
+uint16_t os2_Dos16QHandType(CPU286_Context* ctx) {
+    uint16_t sp_offset = ctx->sp + 4;
+    uint16_t hFile    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
+    uint16_t type_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    uint16_t type_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint16_t attr_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    uint16_t attr_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    uint16_t* host_type = (uint16_t*)mode16to32(type_sel, type_off);
+    uint16_t* host_attr = (uint16_t*)mode16to32(attr_sel, attr_off);
+
+    if (!host_type || !host_attr) return 87;
+
+    ULONG type32 = 0;
+    ULONG attr32 = 0;
+
+    APIRET rc = os2_DosQueryHType((ULONG)hFile, &type32, &attr32);
+    if (rc == NO_ERROR) {
+        *host_type = (uint16_t)type32;
+        *host_attr = (uint16_t)attr32;
+    }
+    return (uint16_t)rc;
+}
