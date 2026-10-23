@@ -25,25 +25,32 @@ typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 APIRET CDECL os2_MouGetNumButtons(PVOID pResult, HMOU hmou) {
     PUSHORT pButtons = (PUSHORT)pResult;
     
-    if (!pButtons) {
-        return 87; /* ERROR_INVALID_PARAMETER from OS/2 */
-    }
+    if (hmou != 0) return 466; /* ERROR_MOU_INVALID_HANDLE */
+    if (!pButtons) return 87;  /* ERROR_INVALID_PARAMETER */
 
-    /* GetSystemMetrics return the number of buttos from the host */
+    /* GetSystemMetrics returns the number of buttons from the host */
     *pButtons = (USHORT)GetSystemMetrics(SM_CMOUSEBUTTONS);
 
-    /* To avoid a OS/2 hard failure, the absence of a mouse will place a fake one with two buttons */
+    /* To avoid an OS/2 hard failure, the absence of a mouse will place a fake one with two buttons */
     if (*pButtons == 0) {
         *pButtons = 2; 
     }
 
-    return NO_ERROR; /* 0 */
+    return NO_ERROR;
 }
 
 
 APIRET CDECL os2_MouGetPtrPos(PVOID pCursorPos, HMOU hmou) {
-    if (!pCursorPos) return 87;
-    memset(pCursorPos, 0, 4); 
+    PPTRLOC pLoc = (PPTRLOC)pCursorPos;
+
+    if (hmou != 0) return 466; /* ERROR_MOU_INVALID_HANDLE */
+    if (!pLoc) return 87;      /* ERROR_INVALID_PARAMETER */
+
+    /* Mapeamento de Coordenadas: Simula o rato no canto superior esquerdo (0,0) 
+     * Podes futuramente ler via GetConsoleCursorInfo / GetCursorPos do Wine */
+    pLoc->row = 0;
+    pLoc->col = 0;
+
     return NO_ERROR;
 }
 
