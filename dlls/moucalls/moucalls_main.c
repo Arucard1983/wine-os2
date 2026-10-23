@@ -127,8 +127,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         if (!pfnRegister) return FALSE;
 
         /* Ordinal 4. Parameters: 1 Far Pointer (4 bytes) + 1 Handle (2 bytes) = 6 bytes */
-        pfnRegister("MOUCALLS", 4, 6, os2_Mou16GetPtrPos);
-        pfnRegister("MOUCALLS", 8, 6, os2_Mou16GetNumButtons);
+        pfnRegister("MOUCALLS", 7, 6, os2_Mou16GetPtrPos);
+        pfnRegister("MOUCALLS", 15, 6, os2_Mou16GetNumButtons);
 
         printf("[Moucalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
