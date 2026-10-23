@@ -117,6 +117,11 @@ typedef struct _FILEFINDBUF3 {
     CHAR   achName[256];    /* Buffer with ASCIZ name file */
 } FILEFINDBUF3, *PFILEFINDBUF3;
 
+typedef struct _PTRLOC {
+    USHORT row; /* Row (mouse X coordinate) */
+    USHORT col; /* Column (mouse Y coordinate) */
+} PTRLOC, *PPTRLOC;
+
 
 /* =========================================================================
  * 32-BIT OS/2 PROCESS INFORMATION BLOCK (PIB) STRUCT
