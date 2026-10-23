@@ -123,12 +123,6 @@ APIRET CDECL os2_DosExit(ULONG action, ULONG result) {
     return NO_ERROR;
 }
 
-APIRET CDECL os2_DosGetVersion(PULONG pVersion) {
-    if (!pVersion) return 87;
-    /* Retorna a versão de API estável do OS/2 2.1 (0x140A) */
-    *pVersion = 0x0000140A;
-    return NO_ERROR;
-}
 
 /* =========================================================================
  * 16-BIT EMULATED CORES (NE Subsystem - Stack Preservation & Alignment Fix)
@@ -147,7 +141,7 @@ uint16_t os2_Dos16Write(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
     ULONG bytes_written = 0; 
     
-    /* FIX: Correção dos Offsets da Stack Pascal para 12 bytes reais de footprint */
+    /* FIX: Fixings Pascal offsets */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -170,7 +164,7 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
     ULONG bytes_read = 0; 
     
-    /* FIX: Correção dos Offsets da Stack Pascal para 12 bytes reais de footprint */
+    /* FIX: Correcting Pascal offsets */
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -189,32 +183,6 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     return (uint16_t)rc;
 }
 
-uint16_t os2_Dos16GetVersion(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pVer_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t pVer_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
-    uint16_t* host_ver = (uint16_t*)mode16to32(pVer_sel, pVer_off);
-    
-    ULONG ver32 = 0;
-    APIRET rc = os2_DosGetVersion(&ver32);
-    if (rc == NO_ERROR && host_ver) {
-        /* Converte para o layout de retorno de 16-bits do OS/2 (Major byte, Minor byte) */
-        *host_ver = (uint16_t)((ver32 & 0xFF) << 8 | ((ver32 >> 8) & 0xFF));
-    }
-    return (uint16_t)rc;
-}
-
-uint16_t os2_Dos16GetMachineMode(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pMode_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t pMode_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
-    uint8_t* host_mode = (uint8_t*)mode16to32(pMode_sel, pMode_off);
-    
-    if (host_mode) {
-        *host_mode = 1; /* MODE_PROTECTED (Sinaliza que corre em modo protegido) */
-    }
-    return 0;
-}
 
 /* =========================================================================
  * SUBSYSTEM INITIALIZATION - AUTONOMOUS BOOTSTRAP PIPELINE
@@ -237,7 +205,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) return FALSE;
 
-        /* Matrix Completa de 22 Ordinais Registados com Precisão de Bytes da Stack */
+        /* Ordinal table for DOSCALLS */
         pfnRegister("DOSCALLS", 5,   4,  os2_Dos16Exit);
         pfnRegister("DOSCALLS", 34,  8,  os2_Dos16Allocseg);
         pfnRegister("DOSCALLS", 38,  4,  os2_Dos16ReAllocseg);
@@ -254,7 +222,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnRegister("DOSCALLS", 77,  8,  os2_Dos16QHandType);
         pfnRegister("DOSCALLS", 83,  10, os2_Dos16SetFileInfo);
         pfnRegister("DOSCALLS", 84,  8,  os2_Dos16SetFileMode);
-        pfnRegister("DOSCALLS", 89,  6,  os2_Dos16SetVec);
+        pfnRegister("DOSCALLS", 89,  10,  os2_Dos16SetVec);
         pfnRegister("DOSCALLS", 92,  4,  os2_Dos16GetVersion);
         pfnRegister("DOSCALLS", 137, 12, os2_Dos16Read);
         pfnRegister("DOSCALLS", 138, 12, os2_Dos16Write);
