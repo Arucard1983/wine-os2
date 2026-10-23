@@ -1,0 +1,13 @@
+MODULE    = nls.dll
+IMPORTLIB = nls
+
+# Link contra as APIs centrais nativas do Wine
+IMPORTS   = ntdll
+
+ENABLE_ARCHS = i386
+
+C_SRCS = \
+	nls_main.c
+
+SOURCES = \
+	nls_main.c
