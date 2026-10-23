@@ -88,6 +88,36 @@ typedef struct _KBDSTATUS {
     USHORT fsState;   /* Shift/Ctrl/Alt state flags */
 } KBDSTATUS, *PKBDSTATUS;
 
+/* --- Estruturas de Tempo e Data do OS/2 (Usadas em Sistemas de Ficheiros) --- */
+typedef struct _FDATE {
+    USHORT day   : 5;   /* 1-31 */
+    USHORT month : 4;   /* 1-12 */
+    USHORT year  : 7;   /* Ano desde 1980 */
+} FDATE, *PFDATE;
+
+typedef struct _FTIME {
+    USHORT twosecs : 5; /* Segundos divididos por 2 */
+    USHORT minutes : 6; /* 0-59 */
+    USHORT hours   : 5; /* 0-23 */
+} FTIME, *PFTIME;
+
+/* --- Directory Structures (DOSCALLS) --- */
+typedef struct _FILEFINDBUF3 {
+    ULONG  oNextEntryOffset; /* Offset to next entry (0 if last) */
+    FDATE  fdateCreation;   /* File creation Day */
+    FTIME  ftimeCreation;   /* File creation Hour*/
+    FDATE  fdateLastAccess; /* Last Date access  */
+    FTIME  ftimeLastAccess; /* Last Hour access */
+    FDATE  fdateLastWrite;  /* Last change date */
+    FTIME  ftimeLastWrite;  /* Last change hour */
+    ULONG  cbFile;          /* File size (End of File) */
+    ULONG  cbFileAlloc;     /* File disk size */
+    ULONG  attrFile;        /* File attributes (ReadOnly, Hidden, Dir, etc.) */
+    UCHAR  cchName;         /* Name lenght (in bytes) */
+    CHAR   achName[256];    /* Buffer with ASCIZ name file */
+} FILEFINDBUF3, *PFILEFINDBUF3;
+
+
 /* =========================================================================
  * 32-BIT OS/2 PROCESS INFORMATION BLOCK (PIB) STRUCT
  * ========================================================================= */
