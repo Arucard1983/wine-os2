@@ -7,7 +7,15 @@ IMPORTS   = ntdll
 ENABLE_ARCHS = i386
 
 C_SRCS = \
+	doscalls_file.c \
+	doscalls_mem.c \
+	doscalls_proc.c \
+	doscalls_system.c \
 	doscalls_main.c
 
 SOURCES = \
+	doscalls_file.c \
+	doscalls_mem.c \
+	doscalls_proc.c \
+	doscalls_system.c \
 	doscalls_main.c
