@@ -1,0 +1,31 @@
+/*
+ *  wineos2.rc - Resource definitions for Wine-OS/2 Control Panel Applet
+ *  (c) Arucard 2026 - Wine-OS/2 Project
+ */
+
+#include <windef.h>
+#include <winuser.h>
+
+/* Icon ID for the Control Panel item */
+1 ICON "wineos2.ico"
+
+/* Dialog Layout template matching standard Wine control panel applets */
+100 DIALOG 0, 0, 260, 180
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Wine-OS/2 Subsystem Configuration"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    GROUPBOX        "Emulated Environment Properties", -1, 10, 10, 240, 75
+    LTEXT           "OS/2 Version:", -1, 20, 25, 60, 10
+    EDITTEXT        101, 90, 23, 60, 12, ES_AUTOHSCROLL
+    LTEXT           "Machine Mode:", -1, 20, 42, 60, 10
+    EDITTEXT        102, 90, 40, 60, 12, ES_AUTOHSCROLL
+    LTEXT           "(1 = Protected Mode Ring 3 Enforced)", -1, 155, 42, 90, 10, WS_DISABLED
+
+    GROUPBOX        "Dynamic Relocation Mappings", -1, 10, 90, 240, 55
+    LTEXT           "OS2LibPath:", -1, 20, 105, 50, 10
+    EDITTEXT        103, 20, 118, 220, 12, ES_AUTOHSCROLL
+
+    DEFPUSHBUTTON   "Save", IDOK, 140, 155, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 155, 50, 14
+END
