@@ -1,8 +1,10 @@
 # doscalls.spec - OS/2 Core Subsystem Ordinal Mapping using NTDLL Backends
+# (c) Arucard 2026 - Wine-OS/2 Project
 
-# doscalls.spec - OS/2 Core Subsystem Ordinal Mapping using NTDLL Backends
-
-# 16-bit Legacy OS/2 APIs (NE) - Handled as generic callbacks receiving the CPU context pointer
+# =========================================================================
+# 16-BIT LEGACY OS/2 APIs (NE Subsystem)
+# Handled as generic callbacks receiving the CPU context pointer
+# =========================================================================
 5   cdecl Dos16Exit(ptr) os2_Dos16Exit
 34  cdecl Dos16Allocseg(ptr) os2_Dos16Allocseg
 38  cdecl Dos16ReAllocseg(ptr) os2_Dos16ReAllocseg
@@ -26,25 +28,29 @@
 144 cdecl Dos16ExecPgm(ptr) os2_Dos16ExecPgm
 151 cdecl Dos16SearchPath(ptr) os2_Dos16SearchPath
 
-# 32-bit Native OS/2 APIs (LX) - Mapped correctly with standard architecture types
-10049  cdecl DosGetMachineMode(long) os2_DosGetMachineMode
-10075  cdecl DosQueryFileMode(long long) os2_DosQueryFileMode
-10084  cdecl DosSetFileMode(long long) os2_DosSetFileMode
-10089  cdecl DosSetVec(long long) os2_DosSetVec
-10218  cdecl DosSetFileInfo(long long) os2_DosSetFileInfo
-10224  cdecl DosQueryHType(long long) os2_DosQueryHType
-10228  cdecl DosSearchPath(long long) os2_DosSearchPath
-10234  cdecl DosExit(long long) os2_DosExit
-10256  cdecl DosSetFilePtr(long long) os2_DosSetFilePtr
-10257  cdecl DosClose(long long) os2_DosClose
-10259  cdecl DosDelete(long long) os2_DosDelete
-10264  cdecl DosFindFirst(long long) os2_DosFindFirst
-10265  cdecl DosFindNext(long long) os2_DosFindNext
-10272  cdecl DosSetFileSize(long long) os2_DosSetFileSize
-10273  cdecl DosOpen(long long) os2_DosOpen
-10279  cdecl DosQueryFileInfo(long long) os2_DosQueryFileInfo
-10281  cdecl DosRead(long ptr long ptr) os2_DosRead
-10282  cdecl DosWrite(long ptr long ptr) os2_DosWrite
-10283  cdecl DosExecPgm(long ptr long ptr) os2_DosExecPgm
-10299  cdecl DosAllocMem(long ptr long ptr long ptr) os2_DosAllocMem
-10348  cdecl DosQuerySysInfo(long ptr long ptr long ptr) os2_DosQuerySysInfo
+# =========================================================================
+# 32-BIT NATIVE OS/2 APIs (LX Subsystem)
+# Mapped accurately with correct architecture types (long vs ptr)
+# =========================================================================
+10049 cdecl DosGetMachineMode(ptr) os2_DosGetMachineMode
+10075 cdecl DosQueryFileMode(ptr ptr long) os2_DosQueryFileMode
+10084 cdecl DosSetFileMode(ptr long long) os2_DosSetFileMode
+10089 cdecl DosSetVec(long ptr ptr) os2_DosSetVec
+10218 cdecl DosSetFileInfo(long long ptr long) os2_DosSetFileInfo
+10224 cdecl DosQueryHType(long ptr ptr) os2_DosQueryHType
+10228 cdecl DosSearchPath(long ptr ptr ptr long) os2_DosSearchPath
+10234 cdecl DosExit(long long) os2_DosExit
+10256 cdecl DosSetFilePtr(long long long ptr) os2_DosSetFilePtr
+10257 cdecl DosClose(long) os2_DosClose
+10259 cdecl DosDelete(ptr long) os2_DosDelete
+10264 cdecl DosFindFirst(ptr ptr long ptr long ptr long) os2_DosFindFirst
+10265 cdecl DosFindNext(long ptr long ptr) os2_DosFindNext
+10272 cdecl DosSetFileSize(long long) os2_DosSetFileSize
+10273 cdecl DosOpen(ptr ptr ptr long long long long ptr) os2_DosOpen
+10279 cdecl DosQueryFileInfo(long long ptr long) os2_DosQueryFileInfo
+10281 cdecl DosRead(long ptr long ptr) os2_DosRead
+10282 cdecl DosWrite(long ptr long ptr) os2_DosWrite
+10283 cdecl DosExecPgm(ptr long long ptr ptr ptr ptr) os2_DosExecPgm
+10299 cdecl DosAllocMem(ptr long long ptr ptr ptr) os2_DosAllocMem
+10348 cdecl DosQuerySysInfo(long long ptr long) os2_DosQuerySysInfo
+

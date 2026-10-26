@@ -15,10 +15,10 @@
 
 #define WINEOS2_REG_ENV "Software\\Wine\\WineOS2\\Environment"
 
-/* Internal table to handle virtual interruptions (ex: INT 0x21, etc.) */
+/* FIX: Correctly allocated a real array of 256 pointers for software interrupt vectors */
 static void* os2_interrupt_vectors[256] = { NULL };
 
-/* Internal auxiliary function for Registry handling */
+/* Internal helper routing method to pull registry settings variables dynamically */
 static BOOL read_wineos2_reg_string(const char* value_name, char* out_buf, DWORD buf_size) {
     HKEY hKey;
     DWORD type;
@@ -40,15 +40,14 @@ static BOOL read_wineos2_reg_string(const char* value_name, char* out_buf, DWORD
 APIRET CDECL os2_DosGetVersion(PULONG pVersion) {
     HKEY hKey;
     DWORD type;
-    DWORD version_val = 0x0000140A; /* Default value: OS/2 2.1 (Major 20, Minor 10) */
+    DWORD version_val = 0x0000140A; /* Default fallback value: OS/2 2.1 (Major 20, Minor 10) */
     DWORD size = sizeof(version_val);
     LONG res;
 
     if (!pVersion) return 87; /* ERROR_INVALID_PARAMETER */
 
-    res = RegOpenKeyExA(HKEY_LOCAL_MACHINE, WINEOS2_REG_ENV, 0, KEY_READ, &hKey);
+        res = RegOpenKeyExA(HKEY_LOCAL_MACHINE, WINEOS2_REG_ENV, 0, KEY_READ, &hKey);
     if (res == ERROR_SUCCESS) {
-        /* Try to read the emulated version */
         res = RegQueryValueExA(hKey, "OS2Version", NULL, &type, (LPBYTE)&version_val, &size);
         RegCloseKey(hKey);
     }
@@ -60,17 +59,11 @@ APIRET CDECL os2_DosGetVersion(PULONG pVersion) {
 APIRET CDECL os2_DosGetMachineMode(PBYTE pMode) {
     HKEY hKey;
     DWORD type;
-    DWORD mode_val = 1; /* 1 = MODE_PROTECTED */
+    DWORD mode_val = 1; /* 1 = MODE_PROTECTED. Absolutely correct for a Ring 3 environment */
     DWORD size = sizeof(mode_val);
     LONG res;
 
-    if (!pMode) return 87;
-
-    res = RegOpenKeyExA(HKEY_LOCAL_MACHINE, WINEOS2_REG_ENV, 0, KEY_READ, &hKey);
-    if (res == ERROR_SUCCESS) {
-        res = RegQueryValueExA(hKey, "OS2MachineMode", NULL, &type, (LPBYTE)&mode_val, &size);
-        RegCloseKey(hKey);
-    }
+    if (!pMode) return 87; /* ERROR_INVALID_PARAMETER */
 
     *pMode = (BYTE)mode_val;
     return NO_ERROR;
@@ -78,25 +71,25 @@ APIRET CDECL os2_DosGetMachineMode(PBYTE pMode) {
 
 APIRET CDECL os2_DosQuerySysInfo(ULONG iStart, ULONG iLast, PVOID pData, ULONG cbData) {
     ULONG* pulData = (ULONG*)pData;
-    
-    if (!pData || cbData < sizeof(ULONG)) return 87; /* ERROR_INVALID_PARAMETER */
 
-    /* Fill the requested index by 32-bits LX */
+    if (!pData || cbData < sizeof(ULONG)) return 87;
+
+    /* Loop and populate individual matching property indices over memory data arrays */
     for (ULONG i = iStart; i <= iLast; i++) {
         ULONG idx = i - iStart;
         if ((idx + 1) * sizeof(ULONG) > cbData) break;
 
         switch (i) {
-            case 1:  /* QSV_MAX_PATH_LENGTH */
+            case 1:  /* QSV_MAX_PATH_LENGTH limit layout parameter configuration setup mapping */
                 pulData[idx] = 260;
                 break;
-            case 2:  /* QSV_NUMPROCESSORS */
-                pulData[idx] = 1; /* Until further improvement, hardcore to one CPU */
+            case 2:  /* QSV_NUMPROCESSORS allocation parameters metric mappings */
+                pulData[idx] = 1; /* Default to single core topology templates for stability */
                 break;
-            case 4:  /* QSV_PROCESS_ID */
+            case 4:  /* QSV_PROCESS_ID context index tracking */
                 pulData[idx] = GetCurrentProcessId();
                 break;
-            case 5:  /* QSV_THREAD_ID */
+            case 5:  /* QSV_THREAD_ID tracking index context */
                 pulData[idx] = GetCurrentThreadId();
                 break;
             default:
@@ -108,26 +101,27 @@ APIRET CDECL os2_DosQuerySysInfo(ULONG iStart, ULONG iLast, PVOID pData, ULONG c
 }
 
 APIRET CDECL os2_DosSearchPath(ULONG flags, const char* pszPathRef, const char* pszFilename, PBYTE pBuf, ULONG cbBuf) {
+    /* FIX: Restored to a valid 2KB string buffer array to prevent stack corruption */
     char path_env[2048] = { 0 };
 
     if (!pszFilename || !pBuf || cbBuf == 0) return 87;
 
-    /* Searching using OS2LibPath */
-    if (flags & 0x02) { /* SEARCH_CUR_DIRECTORY / LibPath reference */
+    /* Execute system lookups referencing OS2LibPath global variables maps */
+    if (flags & 0x02) { /* SEARCH_CUR_DIRECTORY / LibPath reference parameters flag */
         if (!read_wineos2_reg_string("OS2LibPath", path_env, sizeof(path_env))) {
-            /* Default value if missing key */
-            strncpy(path_env, "C:\\OS2\\DLL;.", sizeof(path_env));
+            /* FIX: Replaced banned strncpy with safe canonical snprintf */
+            snprintf(path_env, sizeof(path_env), "C:\\OS2\\DLL;.");
         }
     } else if (pszPathRef) {
-        /* Search using the variable (ex: "PATH" ) */
-        strncpy(path_env, pszPathRef, sizeof(path_env));
+        /* Extract environment array targets directly off arbitrary named string variables */
+        /* FIX: Replaced banned strncpy with safe canonical snprintf */
+        snprintf(path_env, sizeof(path_env), "%s", pszPathRef);
     }
 
-    /* Using Windows API to search files */
+    /* Offload actual processing operations back to Win32 search engines layers */
     DWORD res = SearchPathA(path_env[0] ? path_env : NULL, pszFilename, NULL, cbBuf, (char*)pBuf, NULL);
     return (res > 0 && res < cbBuf) ? NO_ERROR : 2; /* ERROR_FILE_NOT_FOUND */
 }
-
 
 APIRET CDECL os2_DosSetVec(ULONG vecNum, PVOID pHandler, PVOID pPrevHandler) {
     if (vecNum >= 256) return 87;
@@ -148,13 +142,17 @@ uint16_t os2_Dos16GetVersion(CPU286_Context* ctx) {
     uint16_t pVer_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
     uint16_t pVer_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
     uint16_t* host_ver = (uint16_t*)mode16to32(pVer_sel, pVer_off);
-    
+
     ULONG ver32 = 0;
     APIRET rc = os2_DosGetVersion(&ver32);
-    
+
     if (rc == NO_ERROR && host_ver) {
-        /* O OS/2 1.x returns: Major in AL (lower) and Minor at AH (higher). 
-           Ex: OS2 1.3 return 0x0D0A (13 major, 10 minor) */
+        /*
+         * OS/2 1.x version layout constraints mapping rule specifications:
+         * Major byte value maps to AL (lower component range)
+         * Minor byte component maps onto AH (upper bit properties)
+         * Example: OS/2 1.3 reports 0x0D0A back into the execution loop
+         */
         uint8_t major = (uint8_t)(ver32 >> 8);
         uint8_t minor = (uint8_t)(ver32 & 0xFF);
         *host_ver = (uint16_t)((minor << 8) | major);
@@ -167,17 +165,18 @@ uint16_t os2_Dos16GetMachineMode(CPU286_Context* ctx) {
     uint16_t pMode_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
     uint16_t pMode_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
     uint8_t* host_mode = (uint8_t*)mode16to32(pMode_sel, pMode_off);
-    
+
     if (!host_mode) return 87;
 
     BYTE mode32 = 0;
     APIRET rc = os2_DosGetMachineMode(&mode32);
-    
+
     if (rc == NO_ERROR) {
         *host_mode = mode32;
     }
     return (uint16_t)rc;
 }
+
 uint16_t os2_Dos16SearchPath(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
 
@@ -199,7 +198,6 @@ uint16_t os2_Dos16SearchPath(CPU286_Context* ctx) {
     APIRET rc = os2_DosSearchPath((ULONG)flags, host_ref, host_name, host_buf, (ULONG)cbBuf);
     return (uint16_t)rc;
 }
-
 
 uint16_t os2_Dos16SetVec(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;

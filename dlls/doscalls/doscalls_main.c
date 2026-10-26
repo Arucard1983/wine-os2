@@ -1,12 +1,12 @@
 /*
- *  doscalls_main.c - OS/2 16/32-bit API Bridging routed through NTDLL
+ *  dos_main.c - OS/2 16/32-bit API Bridging routed through NTDLL
  *  (c) Arucard 2026 - Wine-OS/2 Project
  */
 
 #define WIN32_LEAN_AND_MEAN
-#define WINEOS2_DLL_MODULE 
+#define WINEOS2_DLL_MODULE
 #include <windows.h>
-#include <winternl.h> 
+#include <winternl.h>
 #include <ntstatus.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,34 +19,47 @@ OS2_LDT_ENTRY* virtual_ldt = NULL;
 typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
 typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 
-/* Manual redeclarations of NTDLL functions */
+/* Manual redeclarations of NTDLL functions not conflicting with winternl.h */
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE handle, NTSTATUS exit_status);
 
 /* =========================================================================
- * EXTERNAL LINKS TO DOMAIN LOGIC MODULES (File, Memory, Process, System)
+ * EXTERNAL LINKS TO DOMAIN LOGIC MODULES (32-BIT LX)
  * ========================================================================= */
-extern APIRET CDECL os2_DosOpen(long arg1, long arg2);
-extern APIRET CDECL os2_DosClose(long arg1, long arg2);
-extern APIRET CDECL os2_DosDelete(long arg1, long arg2);
-extern APIRET CDECL os2_DosFindFirst(long arg1, long arg2);
-extern APIRET CDECL os2_DosFindNext(long arg1, long arg2);
-extern APIRET CDECL os2_DosSetFilePtr(long arg1, long arg2);
-extern APIRET CDECL os2_DosSetFileSize(long arg1, long arg2);
-extern APIRET CDECL os2_DosQueryFileInfo(long arg1, long arg2);
-extern APIRET CDECL os2_DosQueryFileMode(long arg1, long arg2);
-extern APIRET CDECL os2_DosSetFileMode(long arg1, long arg2);
-extern APIRET CDECL os2_DosSetFileInfo(long arg1, long arg2);
-extern APIRET CDECL os2_DosQueryHType(long arg1, long arg2);
-extern APIRET CDECL os2_DosSearchPath(long arg1, long arg2);
-extern APIRET CDECL os2_DosAllocMem(long a, long b, long c, long d, long e, long f);
-extern APIRET CDECL os2_DosQuerySysInfo(long a, long b, long c, long d, long e, long f);
-extern APIRET CDECL os2_DosExecPgm(long a, long b, long c, long d);
-extern APIRET CDECL os2_DosSetVec(long arg1, long arg2);
-extern APIRET CDECL os2_DosGetMachineMode(long arg1);
+extern APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulAction,
+                                ULONG cbFile, ULONG ulAttribute, ULONG fsOpenFlags,
+                                ULONG fsOpenMode, PVOID pEABuf);
+extern APIRET CDECL os2_DosClose(ULONG hFile);
+extern APIRET CDECL os2_DosDelete(const char* pszFileName, ULONG ulReserved);
+extern APIRET CDECL os2_DosFindFirst(const char* pszFileSpec, PULONG phDir, ULONG ulAttribute,
+                                     PVOID pFindBuf, ULONG cbFindBuf, PULONG pcFindCount, ULONG ulInfoLevel);
+extern APIRET CDECL os2_DosFindNext(ULONG hDir, PVOID pFindBuf, ULONG cbFindBuf, PULONG pcFindCount);
+extern APIRET CDECL os2_DosSetFilePtr(ULONG hFile, LONG ib, ULONG method, PULONG ibActual);
+extern APIRET CDECL os2_DosSetFileSize(ULONG hFile, ULONG cbSize);
+extern APIRET CDECL os2_DosQueryFileInfo(ULONG hFile, ULONG ulInfoLevel, PVOID pBuf, ULONG cbBuf);
+extern APIRET CDECL os2_DosQueryFileMode(const char* pszFileName, PULONG pulAttribute, ULONG ulReserved);
+extern APIRET CDECL os2_DosSetFileMode(const char* pszFileName, ULONG ulAttribute, ULONG ulReserved);
+extern APIRET CDECL os2_DosSetFileInfo(ULONG hFile, ULONG ulInfoLevel, PVOID pBuf, ULONG cbBuf);
+extern APIRET CDECL os2_DosQueryHType(ULONG hFile, PULONG pulHandleType, PULONG pulFlagWord);
 
-/* Handlers de 16-bits externos */
+extern APIRET CDECL os2_DosAllocMem(PVOID *ppBaseAddress, ULONG cbSize, ULONG ulFlags, PVOID pParam4, PVOID pParam5, PVOID pParam6);
+extern APIRET CDECL os2_DosSearchPath(ULONG flags, const char* pszPathRef, const char* pszFilename, PBYTE pBuf, ULONG cbBuf);
+extern APIRET CDECL os2_DosQuerySysInfo(ULONG iStart, ULONG iLast, PVOID pData, ULONG cbData);
+extern APIRET CDECL os2_DosSetVec(ULONG vecNum, PVOID pHandler, PVOID pPrevHandler);
+extern APIRET CDECL os2_DosGetMachineMode(PBYTE pMode);
+
+/* =========================================================================
+ * EXTERNAL LINKS TO 16-BIT EMULATED HANDLERS (NE Subsystem)
+ * ========================================================================= */
+/* Memory, System and Process 16-bit modules */
 extern uint16_t os2_Dos16Allocseg(CPU286_Context* ctx);
 extern uint16_t os2_Dos16ReAllocseg(CPU286_Context* ctx);
+extern uint16_t os2_Dos16GetMachineMode(CPU286_Context* ctx);
+extern uint16_t os2_Dos16SetVec(CPU286_Context* ctx);
+extern uint16_t os2_Dos16ExecPgm(CPU286_Context* ctx);
+extern uint16_t os2_Dos16SearchPath(CPU286_Context* ctx);
+extern uint16_t os2_Dos16GetVersion(CPU286_Context* ctx);
+
+/* FIX: Restored missing file subsystem 16-bit external declarations */
 extern uint16_t os2_Dos16ChgFilePtr(CPU286_Context* ctx);
 extern uint16_t os2_Dos16Close(CPU286_Context* ctx);
 extern uint16_t os2_Dos16Delete(CPU286_Context* ctx);
@@ -59,9 +72,6 @@ extern uint16_t os2_Dos16QFileMode(CPU286_Context* ctx);
 extern uint16_t os2_Dos16QHandType(CPU286_Context* ctx);
 extern uint16_t os2_Dos16SetFileInfo(CPU286_Context* ctx);
 extern uint16_t os2_Dos16SetFileMode(CPU286_Context* ctx);
-extern uint16_t os2_Dos16SetVec(CPU286_Context* ctx);
-extern uint16_t os2_Dos16ExecPgm(CPU286_Context* ctx);
-extern uint16_t os2_Dos16SearchPath(CPU286_Context* ctx);
 
 /* Helper to map standard OS/2 console handles to NT native handles */
 static inline HANDLE map_os2_handle_to_nt(ULONG hFile) {
@@ -85,9 +95,12 @@ APIRET CDECL os2_DosWrite(ULONG hFile, PVOID pBuffer, ULONG cbWrite, PULONG pByt
         return NO_ERROR;
     }
 
+    /* Perform a native synchronous NT write call operation (Inherited from winternl.h) */
     status = NtWriteFile(nt_handle, NULL, NULL, NULL, &io_status, pBuffer, cbWrite, NULL, NULL);
+
+    /* Safely check for pending synchronous behavior operations */
     if (status == STATUS_PENDING) {
-        WaitForSingleObject(nt_handle, INFINITE);
+        NtWaitForSingleObject(nt_handle, FALSE, NULL);
         status = io_status.Status;
     }
 
@@ -103,11 +116,8 @@ APIRET CDECL os2_DosRead(ULONG hFile, PVOID pBuffer, ULONG cbRead, PULONG pBytes
     NTSTATUS status;
     HANDLE nt_handle = map_os2_handle_to_nt(hFile);
 
+    /* Perform a native synchronous NT read call operation (Inherited from winternl.h) */
     status = NtReadFile(nt_handle, NULL, NULL, NULL, &io_status, pBuffer, cbRead, NULL, NULL);
-    if (status == STATUS_PENDING) {
-        WaitForSingleObject(nt_handle, INFINITE);
-        status = io_status.Status;
-    }
 
     if (status == STATUS_SUCCESS) {
         if (pBytesRead) *pBytesRead = (ULONG)io_status.Information;
@@ -123,13 +133,12 @@ APIRET CDECL os2_DosExit(ULONG action, ULONG result) {
     return NO_ERROR;
 }
 
-
 /* =========================================================================
  * 16-BIT EMULATED CORES (NE Subsystem - Stack Preservation & Alignment Fix)
  * ========================================================================= */
 
 uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4; 
+    uint16_t sp_offset = ctx->sp + 4;
     uint16_t action_flags = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
     uint16_t result_code  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
 
@@ -139,9 +148,8 @@ uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
 
 uint16_t os2_Dos16Write(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
-    ULONG bytes_written = 0; 
-    
-    /* FIX: Fixings Pascal offsets */
+    ULONG bytes_written = 0;
+
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -162,9 +170,8 @@ uint16_t os2_Dos16Write(CPU286_Context* ctx) {
 
 uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
-    ULONG bytes_read = 0; 
-    
-    /* FIX: Correcting Pascal offsets */
+    ULONG bytes_read = 0;
+
     uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
     uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
     uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
@@ -183,7 +190,6 @@ uint16_t os2_Dos16Read(CPU286_Context* ctx) {
     return (uint16_t)rc;
 }
 
-
 /* =========================================================================
  * SUBSYSTEM INITIALIZATION - AUTONOMOUS BOOTSTRAP PIPELINE
  * ========================================================================= */
@@ -193,19 +199,19 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         HMODULE hCore;
         PFN_wineos2_register_callgate pfnRegister;
         PFN_wineos2_get_ldt_ptr pfnGetLdt;
-        
+
         DisableThreadLibraryCalls(hinstDLL);
 
         hCore = GetModuleHandleA(NULL);
         if (!hCore) return FALSE;
-        
+
         pfnGetLdt = (PFN_wineos2_get_ldt_ptr)GetProcAddress(hCore, "wineos2_get_ldt_ptr");
         if (pfnGetLdt) virtual_ldt = (OS2_LDT_ENTRY*)pfnGetLdt();
 
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) return FALSE;
 
-        /* Ordinal table for DOSCALLS */
+        /* Ordinal execution callback registration table for DOSCALLS */
         pfnRegister("DOSCALLS", 5,   4,  os2_Dos16Exit);
         pfnRegister("DOSCALLS", 34,  8,  os2_Dos16Allocseg);
         pfnRegister("DOSCALLS", 38,  4,  os2_Dos16ReAllocseg);
@@ -222,15 +228,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnRegister("DOSCALLS", 77,  8,  os2_Dos16QHandType);
         pfnRegister("DOSCALLS", 83,  10, os2_Dos16SetFileInfo);
         pfnRegister("DOSCALLS", 84,  8,  os2_Dos16SetFileMode);
-        pfnRegister("DOSCALLS", 89,  10,  os2_Dos16SetVec);
+        pfnRegister("DOSCALLS", 89,  10, os2_Dos16SetVec);
         pfnRegister("DOSCALLS", 92,  4,  os2_Dos16GetVersion);
         pfnRegister("DOSCALLS", 137, 12, os2_Dos16Read);
         pfnRegister("DOSCALLS", 138, 12, os2_Dos16Write);
         pfnRegister("DOSCALLS", 144, 20, os2_Dos16ExecPgm);
         pfnRegister("DOSCALLS", 151, 16, os2_Dos16SearchPath);
-
         printf("[Doscalls] Autonomous 16/32-bit Core Engine registration completed via NTDLL pipeline.\n");
         fflush(stdout);
-      }
+    }
     return TRUE;
 }

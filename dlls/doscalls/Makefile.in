@@ -2,7 +2,7 @@ MODULE    = doscalls.dll
 IMPORTLIB = doscalls
 
 # Link against the native Wine/NT low-level kernel services
-IMPORTS   = ntdll
+IMPORTS   = advapi32 ntdll
 
 ENABLE_ARCHS = i386
 
@@ -15,7 +15,7 @@ C_SRCS = \
 
 SOURCES = \
 	doscalls_file.c \
+	doscalls_main.c \
 	doscalls_mem.c \
 	doscalls_proc.c \
-	doscalls_system.c \
-	doscalls_main.c
+	doscalls_system.c
