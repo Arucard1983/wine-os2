@@ -67,7 +67,7 @@ uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
     uint16_t cbString;
     uint16_t pStr_sel;
     uint16_t pStr_off;
-    uint16_t hvia_val;
+    uint16_t hvio_val;
     char* host_string;
     APIRET rc;
     
@@ -79,7 +79,7 @@ uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
     host_string = (char*)mode16to32(pStr_sel, pStr_off);
     if (!host_string) return 87; /* ERROR_INVALID_PARAMETER */
 
-    rc = os2_VioWrtTTY(host_string, (ULONG)cbString, (HVIO)hvia_val);
+    rc = os2_VioWrtTTY(host_string, (ULONG)cbString, (HVIO)hvio_val);
     
     return (uint16_t)rc;
 }
@@ -135,7 +135,7 @@ uint16_t os2_Vio16QueryFonts(CPU286_Context* ctx) {
 }
 
 
-====================================================================
+/*====================================================================
  * SUBSYSTEM INITIALIZATION - AUTONOMOUS BOOTSTRAP PIPELINE
  * ========================================================================= */
 
