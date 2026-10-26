@@ -1,0 +1,15 @@
+# Makefile.in - Wine-OS/2 Configuration Applet Build Specification
+# (c) Arucard 2026 - Wine-OS/2 Project
+
+MODULE    = wineos2.cpl
+IMPORTS   = user32 gdi32 advapi32
+
+C_SRCS = \
+	wineos2.c
+
+RC_SRCS = \
+	wineos2.rc
+
+SOURCES = \
+	wineos2.c \
+	wineos2.rc
