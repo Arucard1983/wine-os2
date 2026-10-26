@@ -17,10 +17,11 @@ An additional Presentation Manager Add-On for Windows NT was also released by Mi
 This means in practical terms, that any OS/2 program to run will use an anchor program (called wineos2.exe) to load the NE/LX executable and pass the Environment Setup.
 Like the original NT subsystem, all virtual OS/2 configuration will be stored on Wine's Registry, instead config.sys or os2.ini or os2sys.ini.
 To avoid reinvent the wheel (like similar projects like OS2Free or 2ine), Wine's own Win32 API foundation will be used to implement the OS/2 user space API.
-The initial project will implement the DOSCALLS and DOSCALLS1 using NTDLL from Wine codebase, including the 16 to 32-bit trunks.
+The initial project will implement the DOSCALLS using NTDLL from Wine codebase. NLS, VIOCALLS, MOUCALLS, KBDCALLS and other critical dlls would be implemented over Win32 API.
 Later on, Presentation Manager will be implemented using GDI32, USER32, KERNEL32 and other potential dlls from Wine itself.
+To avoid the chaotic 16-bit and 32-bit API mixing, and the limitations of real GDT/LDT manipulation to run 16-bits code on modern CPU, an optimized 286 Ring 3 emulator with callgates thunks will run the 16-bit code and forward to 32-bit functions. With this setup, 16-bit programs can multitask using native NTAPI threads and semaphores and an instance of 286 emulator for each thread, and have their own LDT in software with 8192 selectors. Each selector can be assigned to a 64 kb block of RAM, or a callgate to an ordinal of a system DLL. However, due to this scheme, it is highly unlikely that a single 16-bit could handle up to 512 MB of RAM. Nevertheless the first 16 selectors are softblocked to be used by Real Mode RAM areas, that in this subsystem is just a set of read-only array blocks with zeroes.  
 The final steps, should be dedicated to bridge Network, Printing, System Administrations, REXX, and etc, using Wine infrastructure, and an open-source implementation of REXX.
-Multimedia, such as MMPM/2, DIVE, RAGE and OpenGL, will be dedicated at the end.
+Multimedia, such as MMPM/2, DIVE, RAGE and OpenGL, will be dedicated at the end, where Wine's DirectX will be used as a foundation.
 Also by using the Wine foundation, it is expected that a OS/2 program will call a Windows program, and vice-versa. There's no need to implement the MDOS or Win-OS/2 since their functionality is now inherent.
 
 ## QUICK START
@@ -159,7 +160,7 @@ a bug.
 
 The wineos2.exe loader should be activated by the Wine's loader, otherwise use...
 ```
-wine wineos2.exe -r program.exe
+wine wineos2.exe program.exe
 ```
 
 ## GETTING MORE INFORMATION
