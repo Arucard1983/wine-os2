@@ -214,7 +214,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         /* Ordinal execution callback registration table for DOSCALLS */
         pfnRegister("DOSCALLS", 5,   4,  os2_Dos16Exit);
         pfnRegister("DOSCALLS", 34,  8,  os2_Dos16Allocseg);
-        pfnRegister("DOSCALLS", 38,  4,  os2_Dos16ReAllocseg);
+        pfnRegister("DOSCALLS", 38,  6,  os2_Dos16ReAllocseg);
         pfnRegister("DOSCALLS", 49,  4,  os2_Dos16GetMachineMode);
         pfnRegister("DOSCALLS", 58,  12, os2_Dos16ChgFilePtr);
         pfnRegister("DOSCALLS", 59,  2,  os2_Dos16Close);

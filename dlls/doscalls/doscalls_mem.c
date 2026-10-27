@@ -114,39 +114,51 @@ uint16_t os2_Dos16Allocseg(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Dos16ReAllocseg(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t cbNewSize = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t selector  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
-    uint16_t ldt_index = selector >> 3;
-
-    /* FIX: Mixed declarations fix - moved all local variables to top of block block for C90 compliance */
-    uintptr_t current_addr;
+    uint16_t sp_offset = ctx->sp + 4; /* The the return CS:IP */
+    
+    /* Global variables using C90 standard */
+    uint32_t cbNewSize;
+    uint16_t selector;
+    uint16_t ldt_index;
     ULONG new_size;
-    PVOID realloc_ptr;
-    SIZE_T region_size;
-    NTSTATUS status;
+    void* old_host_ptr;
+    void* new_host_ptr;
+    
+    /* 1. Safe extract using OS/2 Pascal 16-bits stack*/
+    /* The size (ULONG, 4 bytes) at the base of argument stack */
+    void* size_ptr = mode16to32(ctx->ss, sp_offset + 0);
+    /* The selector (USHORT, 2 bytes) is next 4 bytes above */
+    void* sel_ptr  = mode16to32(ctx->ss, sp_offset + 4);
 
-    if (!virtual_ldt || ldt_index >= 8192) return 5; /* ERROR_ACCESS_DENIED */
+    if (!size_ptr || !sel_ptr) return 5; /* ERROR_ACCESS_DENIED / GPF Boundary */
 
-        /* FIX: Extract the linear memory address correctly using the canonical 2026 'base' field layout */
-        current_addr = (uintptr_t)virtual_ldt[ldt_index].base;
+    memcpy(&cbNewSize, size_ptr, 4);
+    memcpy(&selector, sel_ptr, 2);
+    ldt_index = selector >> 3;
+
+    if (!virtual_ldt || ldt_index >= 8192 || !virtual_ldt[ldt_index].present) {
+        return 5; /* ERROR_ACCESS_DENIED */
+    }
+
+    /* 2. Treatment of the segment limit (0 = 64KB full) */
     new_size = (cbNewSize == 0) ? 65536 : cbNewSize;
-    realloc_ptr = (PVOID)current_addr;
-    region_size = new_size;
+    if (new_size > 65536) return 8; /* O 286 do not handle segment above 64KB */
 
-    /* Commit extended visibility page limits boundaries natively on the process context architecture */
-    status = NtAllocateVirtualMemory(NtCurrentProcess(),
-                                     &realloc_ptr,
-                                     0,
-                                     &region_size,
-                                     MEM_COMMIT,
-                                     PAGE_READWRITE);
+    /* 3. Real realocation above heap to preserve data */
+    old_host_ptr = (void*)(uintptr_t)virtual_ldt[ldt_index].base;
+    
+    if (old_host_ptr) {
+        new_host_ptr = HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, old_host_ptr, new_size);
+    } else {
+        new_host_ptr = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, new_size);
+    }
 
-    if (status != STATUS_SUCCESS) return 8;
+    if (!new_host_ptr) return 8; /* ERROR_NOT_ENOUGH_MEMORY */
 
-    /* FIX: Updated the limit correctly using the canonical 2026 'limit' structure field */
+    /* 4. Update the virtualized LDT on emulator */
+    virtual_ldt[ldt_index].base  = (uint32_t)(uintptr_t)new_host_ptr;
     virtual_ldt[ldt_index].limit = (uint32_t)(new_size - 1);
 
-    return 0;
+    return 0; /* NO_ERROR */
 }
 
