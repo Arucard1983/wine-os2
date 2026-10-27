@@ -16,7 +16,7 @@ typedef struct struct_CPU286_Context CPU286_Context;
 
 /* 286 Segment Descriptor (Protected Mode) - 32-bit Host Compliant */
 typedef struct {
-    uint32_t base;      /* 64-bit linear base address in modern Host/Wine space */
+    uint32_t base;      /* 32-bit linear base address in modern Host/Wine space */
     uint32_t limit;      /* Segment limit (Maximum of 64KB for 286) */
     uint8_t  present;    /* Segment presence flag in virtual memory */
     uint8_t  read_write; /* Kept for loader backward compatibility */
@@ -75,6 +75,9 @@ struct struct_CPU286_Context {
 
     /* Active selector for current instruction (0 = opcode default) */
     uint16_t seg_override;
+
+    /* Atomic lock flag*/
+    uint8_t lock_prefix;
 };
 
 /* Helper to convert 16-bit segmented address to 32-bit flat pointer cleanly */
@@ -88,13 +91,13 @@ static inline void* mode16to32(uint16_t selector, uint16_t offset) {
         return NULL; /* Offset out of bounds for this segment */
     }
 
-    /* Force full 64-bit unsigned arithmetic to prevent integer truncation */
+    /* Force full 32-bit unsigned arithmetic to prevent integer truncation */
     uint32_t linear_address = virtual_ldt[index].base + (uint32_t)offset;
     
     return (void*)linear_address;
 }
 
-/* Helper to convert 64-bit flat pointer back to 16-bit segmented address */
+/* Helper to convert 32-bit flat pointer back to 16-bit segmented address */
 static inline int mode32to16(const void* flat_ptr, uint16_t* out_selector, uint16_t* out_offset) {
     uint64_t target_addr = (uint64_t)(uintptr_t)flat_ptr;
 
@@ -113,11 +116,11 @@ static inline int mode32to16(const void* flat_ptr, uint16_t* out_selector, uint1
     return 0;
 }
 
-
 static inline void cpu286_update_flags16(CPU286_Context* ctx, uint32_t result) {
-    if ((result & 0xFFFF) == 0) ctx->flags |= ZF_MASK; else ctx->flags &= ~ZF_MASK;
-    if (result & 0x8000) ctx->flags |= SF_MASK; else ctx->flags &= ~SF_MASK;
+    if ((result & 0xFFFF) == 0) ctx->flags |= ZF_MASK; else ctx->flags &= ~ZF_MASK; /* FIX: ZF_MASK */
+        if (result & 0x8000) ctx->flags |= SF_MASK; else ctx->flags &= ~SF_MASK;
 }
+
 
 static inline void cpu286_push16(CPU286_Context* ctx, uint16_t value) {
     ctx->sp -= 2;
@@ -217,7 +220,7 @@ static inline void* cpu286_decode_modrm(CPU286_Context* ctx, uint8_t modrm, uint
         case 5: offset = ctx->di; break;
         case 6:
             if (mod == 0) {
-                offset = *(uint16_t*)(*code_stream);
+                memcpy(&offset, *code_stream, 2);
                 *code_stream += 2;
                 ctx->ip += 2;
             } else {
@@ -257,6 +260,64 @@ static inline void* cpu286_decode_modrm(CPU286_Context* ctx, uint8_t modrm, uint
 
 }
 
+static inline uint16_t* get_reg16_ptr(CPU286_Context* ctx, uint8_t rm) {
+    switch (rm) {
+        case 0: return &ctx->ax; case 1: return &ctx->cx;
+        case 2: return &ctx->dx; case 3: return &ctx->bx;
+        case 4: return &ctx->sp; case 5: return &ctx->bp;
+        case 6: return &ctx->si; case 7: return &ctx->di;
+    }
+    return NULL;
+}
+
+static inline uint8_t* get_reg8_ptr(CPU286_Context* ctx, uint8_t rm) {
+    switch (rm & 0x07) {
+        case 0: return &ctx->al;
+        case 1: return &ctx->cl;
+        case 2: return &ctx->dl;
+        case 3: return &ctx->bl;
+        case 4: return &ctx->ah;
+        case 5: return &ctx->ch;
+        case 6: return &ctx->dh;
+        case 7: return &ctx->bh;
+    }
+    return NULL;
+}
+
+
+static inline uint16_t execute_shift_rotate16(CPU286_Context* ctx, uint16_t val, uint8_t count, uint8_t operation) {
+    count &= 0x1F; /* 286 mask: Avoid infinite cycles */
+    if (count == 0) return val;
+
+    /* Note: It should update the flags (CF, OF, SF, ZF, PF) inside the operation */
+    switch (operation) {
+        case 0: /* ROL */ return (val << count) | (val >> (16 - count));
+        case 1: /* ROR */ return (val >> count) | (val << (16 - count));
+        case 2: /* RCL */ /* Implement with Carry flag */ break;
+        case 3: /* RCR */ /* Implement with Carry flag... */ break;
+        case 4: /* SHL/SAL */ return val << count;
+        case 5: /* SHR */ return val >> count;
+        case 7: /* SAR */ return (int16_t)val >> count; /* Preserve signal */
+    }
+    return val;
+}
+
+static inline uint8_t execute_shift_rotate8(CPU286_Context* ctx, uint8_t val, uint8_t count, uint8_t operation) {
+    count &= 0x1F;
+    if (count == 0) return val;
+
+    switch (operation) {
+        case 0: /* ROL */ return (val << count) | (val >> (8 - count));
+        case 1: /* ROR */ return (val >> count) | (val << (8 - count));
+        case 2: /* RCL */ break;
+        case 3: /* RCR */ break;
+        case 4: /* SHL/SAL */ return val << count;
+        case 5: /* SHR */ return val >> count;
+        case 7: /* SAR */ return (int8_t)val >> count;
+    }
+    return val;
+}
+
 
 /* Helper to update flags for logical operations (AND, OR, XOR) */
 static inline void cpu286_update_logical_flags16(CPU286_Context* ctx, uint32_t result) {
@@ -290,7 +351,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         goto re_execute;
     }
 
-    /* Resolve overrode repetitions segments  */
+    /* Resolve override repetitions segments  */
     if (opcode == 0x26) { ctx->seg_override = ctx->es; ctx->ip++; goto re_execute; }
     if (opcode == 0x36) { ctx->seg_override = ctx->ss; ctx->ip++; goto re_execute; }
     if (opcode == 0x2E) { ctx->seg_override = ctx->cs; ctx->ip++; goto re_execute; }
@@ -434,6 +495,27 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 break;
             }
 
+
+            /* =========================================================================
+             * BUS LOCK PREFIX (Opcode 0xF0) - MULTITHREAD COMPLIANCE
+             * ========================================================================= */
+            case 0xF0: {
+                /* Within Ring 3 Protected Mode CPL is always 3.
+                 * O IOPL lives on bits 12 and 13 from FLAGS. */
+                uint8_t iopl = (ctx->flags >> 12) & 0x03;
+
+                if (3 > iopl) {
+                    /* On 286 real, if CPL > IOPL in Protected Mode, fires #GP(0) */
+                    printf("[CPU TRAP] #GP(0): LOCK prefix violation at CS:IP = %04X:%04X (CPL3 > IOPL%d)\n",
+                           ctx->cs, ctx->ip - 1, iopl);
+                    exit(139); // Emulator closes safely
+                }
+
+                /* If passes the privilege flag, active it and executes
+                 * the next instruction comes next */
+                ctx->lock_prefix = 1;
+                goto re_execute;
+            }
 
 
         /* =========================================================================
@@ -1331,6 +1413,18 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             break;
         }
 
+        case 0xA8: { /* TEST AL, ib (Logically compare immediate byte with AL) */
+            uint8_t imm8 = *args_ptr;
+            ctx->ip++;
+            args_ptr++; /* Sync the program counter */
+
+            uint32_t res = (uint32_t)ctx->al & imm8;
+            cpu286_update_flags8(ctx, res);
+            ctx->flags &= ~(CF_MASK | OF_MASK); /* Intel specs: Clear Carry and Overflow */
+            break;
+        }
+
+
         /* =========================================================================
          * OPTIMIZED STRING STORE WORD (Opcode 0xAB) - FIXED FOR ALIGNMENT
          * ========================================================================= */
@@ -1821,48 +1915,75 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
                 /* =========================================================================
-                 * INTEL 186/286 EXTENDED SHIFTS AND BOUNDS (GRP2 IM8) - FIXED FOR 16-BIT HOSTS
+                 * INTEL 186/286 EXTENDED SHIFTS AND BOUNDS (GRP2 IM8) - FIXED
                  * ========================================================================= */
                 case 0xC1: { /* GRP2 Ev, ib (Shift/Rotate by immediate 8-bit count) */
                     uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                     uint16_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
 
                     uint8_t count = *args_ptr & 0x1F;
-                    ctx->ip++;
-                    args_ptr++; /* FIXED: sync properly the system pointers */
+                    ctx->ip++; args_ptr++;
 
                     if (dest && count > 0) {
                         uint8_t sub_op = (modrm >> 3) & 0x07;
-
-                        /* FIXED: using memcpy to avoid host misalignments */
                         uint16_t val = 0;
                         memcpy(&val, dest, 2);
+                        uint16_t orig_val = val;
 
                         switch (sub_op) {
                             case 4: /* SHL / SAL */
                             case 6: {
-                                uint32_t res = (uint32_t)val << count;
-                                if (res & 0x10000) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
-                                val = (uint16_t)res; cpu286_update_flags16(ctx, val);
+                                if (count <= 16) {
+                                    uint8_t cf_bit = (val >> (16 - count)) & 1;
+                                    if (cf_bit) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                } else {
+                                    ctx->flags &= ~CF_MASK;
+                                }
+                                val = val << count;
+                                cpu286_update_flags16(ctx, val);
+                                if (count == 1) {
+                                    uint8_t bit15 = (val >> 15) & 1;
+                                    uint8_t cf = IS_CF_SET(ctx) ? 1 : 0;
+                                    if (bit15 != cf) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                }
                                 break;
                             }
                             case 5: { /* SHR */
-                                if (((uint32_t)val >> (count - 1)) & 1) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
-                                val = val >> count; cpu286_update_flags16(ctx, val);
+                                if (count <= 16) {
+                                    uint8_t cf_bit = (val >> (count - 1)) & 1;
+                                    if (cf_bit) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                } else {
+                                    ctx->flags &= ~CF_MASK;
+                                }
+                                val = val >> count;
+                                cpu286_update_flags16(ctx, val);
+                                if (count == 1) {
+                                    if (orig_val & 0x8000) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                }
                                 break;
                             }
                             case 7: { /* SAR */
                                 int16_t signed_val = (int16_t)val;
-                                if (((uint32_t)signed_val >> (count - 1)) & 1) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
-                                val = (uint16_t)(signed_val >> count); cpu286_update_flags16(ctx, val);
+                                if (count <= 16) {
+                                    uint8_t cf_bit = (signed_val >> (count - 1)) & 1;
+                                    if (cf_bit) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                } else {
+                                    if (signed_val & 0x8000) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                }
+                                val = (uint16_t)(signed_val >> count);
+                                cpu286_update_flags16(ctx, val);
+                                if (count == 1) ctx->flags &= ~OF_MASK;
                                 break;
                             }
+                            default:
+                                // If needed sub_op 0, 1, 2, 3 (Rotates) add here.
+                                break;
                         }
-                        /* Return the result to the emulated memory */
                         memcpy(dest, &val, 2);
                     }
                     break;
                 }
+
 
                 /* =========================================================================
                  * HIGH-LEVEL PROCEDURE PROLOGUE (ENTER) - OK!
@@ -2245,6 +2366,13 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                             *dest = (uint8_t)res;
                                             break;
                                         }
+                                        case 4: { /* AND Eb, ib */
+                                            *dest &= imm;
+                                            cpu286_update_flags8(ctx, *dest);
+                                            ctx->flags &= ~(CF_MASK | OF_MASK); /* Intel Spec: Clean Carry and Overflow */
+                                            break;
+                                        }
+
                                         case 5: { /* SUB */
                                             uint32_t res = (uint32_t)*dest - imm;
                                             cpu286_update_flags8(ctx, res);
@@ -2265,6 +2393,147 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                 }
                                 break;
                             }
+
+                            /* =========================================================================
+                             * BITWISE SHIFT/ROTATE GROUPS 0xD0 AND 0xD2 (8-BIT) - FIXED ALIGNMENT
+                             * ========================================================================= */
+                            case 0xD0:   /* Shift/Rotate 8-bit by 1 */
+                            case 0xD2: { /* Shift/Rotate 8-bit by count in CL register */
+                                uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
+                                // Note: cpu286_get_reg8 e cpu286_decode_modrm should retornar uint8_t*
+                                uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+
+                                if (!dest) break;
+                                uint8_t count = (opcode == 0xD0) ? 1 : (ctx->cl & 0x1F); /* Limit of 31 max on 286+ */
+                                if (count == 0) break;
+
+                                uint8_t sub_op = (modrm >> 3) & 0x07;
+                                uint8_t val = *dest; // 8 bits aligned by definition, do not need memcpy
+
+                                switch (sub_op) {
+                                    case 0: { /* ROL (Rotate Left) */
+                                        for (uint8_t i = 0; i < count; i++) {
+                                            uint8_t bit7 = (val >> 7) & 1;
+                                            val = (val << 1) | bit7;
+                                            if (bit7) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                        }
+                                        if (count == 1) {
+                                            uint8_t bit7 = (val >> 7) & 1;
+                                            uint8_t cf = IS_CF_SET(ctx) ? 1 : 0;
+                                            if (bit7 != cf) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                        }
+                                        break;
+                                    }
+                                    case 1: { /* ROR (Rotate Right) */
+                                        for (uint8_t i = 0; i < count; i++) {
+                                            uint8_t bit0 = val & 1;
+                                            val = (val >> 1) | (bit0 << 7);
+                                            if (bit0) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                        }
+                                        if (count == 1) {
+                                            uint8_t bit7 = (val >> 7) & 1;
+                                            uint8_t bit6 = (val >> 6) & 1;
+                                            if (bit7 != bit6) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                        }
+                                        break;
+                                    }
+                                    case 2: { /* RCL (Rotate through Carry Left) */
+                                        uint32_t rcl_val = val;
+                                        for (uint8_t i = 0; i < count; i++) {
+                                            uint8_t old_cf = IS_CF_SET(ctx) ? 1 : 0;
+                                            if (rcl_val & 0x80) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                            rcl_val = (rcl_val << 1) | old_cf;
+                                        }
+                                        val = (uint8_t)rcl_val;
+                                        if (count == 1) {
+                                            uint8_t bit7 = (val >> 7) & 1;
+                                            uint8_t cf = IS_CF_SET(ctx) ? 1 : 0;
+                                            if (bit7 != cf) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                        }
+                                        break;
+                                    }
+                                    case 3: { /* RCR (Rotate through Carry Right) */
+                                        uint32_t rcr_val = val;
+                                        for (uint8_t i = 0; i < count; i++) {
+                                            uint8_t old_cf = IS_CF_SET(ctx) ? 1 : 0;
+                                            if (rcr_val & 1) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                            rcr_val = (rcr_val >> 1) | ((uint32_t)old_cf << 7);
+                                        }
+                                        val = (uint8_t)rcr_val;
+                                        if (count == 1) {
+                                            uint8_t bit7 = (val >> 7) & 1;
+                                            uint8_t bit6 = (val >> 6) & 1;
+                                            if (bit7 != bit6) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                        }
+                                        break;
+                                    }
+                                    case 4: /* SHL / SAL (Shift Left) */
+                                    case 6: {
+                                        // FIX:  CF should be the last bit. If count > 8, on 286 CF becomes undefined or 0.
+                                        // For count <= 8, extract the correct bit:
+                                        if (count <= 8) {
+                                            uint8_t cf_bit = (val >> (8 - count)) & 1;
+                                            if (cf_bit) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                        } else {
+                                            ctx->flags &= ~CF_MASK;
+                                        }
+
+                                        uint8_t orig_val = val;
+                                        val = val << count;
+                                        cpu286_update_flags8(ctx, val); // Update ZF, SF, PF
+
+                                        if (count == 1) {
+                                            uint8_t bit7 = (val >> 7) & 1;
+                                            uint8_t cf = IS_CF_SET(ctx) ? 1 : 0;
+                                            if (bit7 != cf) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                        }
+                                        break;
+                                    }
+                                    case 5: { /* SHR (Shift Right Logical) */
+                                        if (count <= 8) {
+                                            uint8_t cf_bit = (val >> (count - 1)) & 1;
+                                            if (cf_bit) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                        } else {
+                                            ctx->flags &= ~CF_MASK;
+                                        }
+
+                                        uint8_t orig_val = val;
+                                        val = val >> count;
+                                        cpu286_update_flags8(ctx, val);
+
+                                        if (count == 1) {
+                                            // OF = original most significative bit (MSB from original input)
+                                            if (orig_val & 0x80) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                                        }
+                                        break;
+                                    }
+                                    case 7: { /* SAR (Shift Right Arithmetic) */
+                                        int8_t signed_val = (int8_t)val;
+                                        if (count <= 8) {
+                                            uint8_t cf_bit = (signed_val >> (count - 1)) & 1;
+                                            if (cf_bit) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                        } else {
+                                            // If count > 8, fill everything with bit signal. CF assume the bit signal value.
+                                            if (signed_val & 0x80) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                        }
+
+                                        val = (uint8_t)(signed_val >> count);
+                                        cpu286_update_flags8(ctx, val);
+
+                                        if (count == 1) {
+                                            ctx->flags &= ~OF_MASK; // When SAR set 1, OF is always cleaned on x86
+                                        }
+                                        break;
+                                    }
+                                    default:
+                                        printf("Rotation Sub-Opcode %d in Groups 0xD0/0xD2 not implemented\n", sub_op);
+                                        break;
+                                }
+
+                                *dest = val;
+                                break;
+                            }
+
 
 
                             /* =========================================================================
@@ -2320,11 +2589,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                 /* Resolve the host pointer to settle the memory bounds [Mínimo (16-bit), Máximo (16-bit)] */
                                 void* bounds_mem = cpu286_decode_modrm(ctx, modrm, &args_ptr);
 
-                                /* RECOVERY FIX: Evaluate the number of bytes cpu286_decode_modrm does in args_ptr
-                                 *              and apply on virtual ctx->ip virtual to not lose sync */
-                                if (mod == 1) ctx->ip += 1;
-                                else if (mod == 2) ctx->ip += 2;
-                                else if (mod == 0 && (modrm & 0x07) == 6) ctx->ip += 2;
 
                                 if (reg_index && bounds_mem) {
                                     int16_t index_val = (int16_t)*reg_index;
@@ -2584,6 +2848,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                     break;
   }
    ctx->seg_override = 0; //Clear segment override to pass to next instruction
+   ctx->lock_prefix = 0; // To ensure that lock flag only takes one instruction.
 }
 
 #endif /* WINEOS2_286CPU_H */
