@@ -31,7 +31,7 @@ extern OS2_LDT_ENTRY* virtual_ldt;
 #define OS2_PAG_COMMIT    0x00000010  /* On some version share bit or set 0x10 */
 
 /* LX call */
-APIRET APIENTRY os2_DosAllocMem(PVOID *ppBaseAddress, ULONG cbSize, ULONG ulFlags) {
+APIRET CDECL os2_DosAllocMem(PVOID *ppBaseAddress, ULONG cbSize, ULONG ulFlags) {
     ULONG protect = PAGE_NOACCESS;
     SIZE_T region_size = cbSize;
     NTSTATUS status;
@@ -151,28 +151,30 @@ uint16_t os2_Dos16Allocseg(CPU286_Context* ctx) {
 uint16_t os2_Dos16ReAllocseg(CPU286_Context* ctx) {
     uint16_t sp_base = ctx->sp + 4; 
     
-    /* 16-bit Pascal extraction */
-    uint16_t selector_offset  = *(uint16_t*)mode16to32(ctx->ss, sp_base + 0);
-    uint16_t selector_adress  = *(uint16_t*)mode16to32(ctx->ss, sp_base + 2);
-    uint16_t cbNewSize = *(uint16_t*)mode16to32(ctx->ss, sp_base + 4);
+    uint16_t* ptr_selector = (uint16_t*)mode16to32(ctx->ss, sp_base + 0);
+    uint16_t* ptr_cbSize   = (uint16_t*)mode16to32(ctx->ss, sp_base + 2);
+
+    if (!ptr_selector || !ptr_cbSize) {
+        printf("[DOSCALLS] Dos16ReAllocseg: Invalid Memory Adress\n");
+        fflush(stdout);
+        return 87; /* ERROR_INVALID_PARAMETER */
+    }
+
+    uint16_t target_selector = *ptr_selector;
+    uint16_t cbNewSize       = *ptr_cbSize;
+    uint16_t ldt_index = target_selector >> 3;
     
-    uint16_t ldt_index;
-    uint16_t* selector;
-    ULONG new_size;
-    void* old_host_ptr;
-    void* new_host_ptr;
-
-    selector = (uint16_t*)mode16to32(selector_adress, selector_offset);
-
-    ldt_index = selector >> 3;
     if (!virtual_ldt || ldt_index >= 8192 || !virtual_ldt[ldt_index].present) {
+        printf("[DOSCALLS] Dos16ReAllocseg: Invalid LDT selector at: 0x%04X\n", target_selector);
+        fflush(stdout);
         return 5; /* ERROR_ACCESS_DENIED */
     }
 
-    new_size = (cbNewSize == 0) ? 65536 : cbNewSize;
+    ULONG new_size = (cbNewSize == 0) ? 65536 : cbNewSize;
 
     /* Get the original selector */
-    old_host_ptr = (void*)(uintptr_t)virtual_ldt[ldt_index].base;
+     void* old_host_ptr = (void*)(uintptr_t)virtual_ldt[ldt_index].base;
+      void* new_host_ptr;
     
     /* Update safely the selector */
     if (old_host_ptr) {

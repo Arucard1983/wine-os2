@@ -41,7 +41,7 @@ extern APIRET CDECL os2_DosSetFileMode(const char* pszFileName, ULONG ulAttribut
 extern APIRET CDECL os2_DosSetFileInfo(ULONG hFile, ULONG ulInfoLevel, PVOID pBuf, ULONG cbBuf);
 extern APIRET CDECL os2_DosQueryHType(ULONG hFile, PULONG pulHandleType, PULONG pulFlagWord);
 
-extern APIRET CDECL os2_DosAllocMem(PVOID *ppBaseAddress, ULONG cbSize, ULONG ulFlags, PVOID pParam4, PVOID pParam5, PVOID pParam6);
+extern APIRET CDECL os2_DosAllocMem(PVOID *ppBaseAddress, ULONG cbSize, ULONG ulFlags);
 extern APIRET CDECL os2_DosSearchPath(ULONG flags, const char* pszPathRef, const char* pszFilename, PBYTE pBuf, ULONG cbBuf);
 extern APIRET CDECL os2_DosQuerySysInfo(ULONG iStart, ULONG iLast, PVOID pData, ULONG cbData);
 extern APIRET CDECL os2_DosSetVec(ULONG vecNum, PVOID pHandler, PVOID pPrevHandler);
@@ -214,7 +214,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         /* Ordinal execution callback registration table for DOSCALLS */
         pfnRegister("DOSCALLS", 5,   4,  os2_Dos16Exit);
         pfnRegister("DOSCALLS", 34,  8,  os2_Dos16Allocseg);
-        pfnRegister("DOSCALLS", 38,  6,  os2_Dos16ReAllocseg);
+        pfnRegister("DOSCALLS", 38,  4,  os2_Dos16ReAllocseg);
         pfnRegister("DOSCALLS", 49,  4,  os2_Dos16GetMachineMode);
         pfnRegister("DOSCALLS", 58,  12, os2_Dos16ChgFilePtr);
         pfnRegister("DOSCALLS", 59,  2,  os2_Dos16Close);
