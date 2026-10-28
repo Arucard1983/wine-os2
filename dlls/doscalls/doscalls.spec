@@ -51,6 +51,6 @@
 10281 cdecl DosRead(long ptr long ptr) os2_DosRead
 10282 cdecl DosWrite(long ptr long ptr) os2_DosWrite
 10283 cdecl DosExecPgm(ptr long long ptr ptr ptr ptr) os2_DosExecPgm
-10299 cdecl DosAllocMem(ptr long long ptr ptr ptr) os2_DosAllocMem
+10299 cdecl DosAllocMem(ptr long long) os2_DosAllocMem
 10348 cdecl DosQuerySysInfo(long long ptr long) os2_DosQuerySysInfo
 
