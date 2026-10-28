@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 /* Forward declaration of the CPU context so the LDT structure can reference it */
 struct CPU286_Context;
@@ -27,6 +28,20 @@ typedef struct {
     /* Function pointer to the Wine C implementation of the OS/2 API */
     uint16_t (*wine_thunk)(CPU286_Context* ctx); 
 } OS2_LDT_ENTRY;
+
+/* 80287 Structures */
+#pragma pack(push, 1)
+typedef struct {
+    uint16_t control_word;
+    uint16_t status_word;
+    uint16_t tag_word;
+    uint16_t fpu_ip;
+    uint16_t fpu_cs;
+    uint16_t fpu_opcode_offset;
+    uint16_t fpu_opcode_selector;
+} FPU287_Environment16;
+#pragma pack(pop)
+
 
 /* Virtualized Local Descriptor Table (Maximum of 8192 selectors) */
 #define LDT_MAX_ENTRIES 8192
@@ -78,6 +93,10 @@ struct struct_CPU286_Context {
 
     /* Atomic lock flag*/
     uint8_t lock_prefix;
+
+    /* 80287 FPU registers*/
+    double fpu_stack[8];
+    int fpu_top; /* Top index (0 to 7) */
 };
 
 /* Helper to convert 16-bit segmented address to 32-bit flat pointer cleanly */
@@ -491,6 +510,106 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                  * the IP stream over displacement bytes and prevent decoding misalignment */
                 if (((modrm >> 6) & 0x03) != 3) {
                     cpu286_decode_modrm(ctx, modrm, &args_ptr);
+                }
+                break;
+            }
+
+            /* =========================================================================
+             * FPU (x87) ESCAPE GROUP 0xD9: FLOATING-POINT - Using HLE with math.h
+             * ========================================================================= */
+            case 0xD9: {
+                uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
+
+                /* Telemetry to monitor the opcode at LHX */
+                printf("[FPU 287] Opcode 0xD9 ModR/M = 0x%02X at CS:IP = %04X:%04X\n", modrm, ctx->cs, ctx->ip - 2);
+                fflush(stdout);
+
+                if (modrm >= 0xC0) {
+                    switch (modrm) {
+                        case 0xE3: /* FNINIT - Reset the floats */
+                            ctx->fpu_top = 7; /* x87 stack starts empty at index 7 and grows backwards */
+                            printf("  -> FPU 287: FNINIT (Pilha limpa).\n");
+                            break;
+
+                        case 0xE0: /* FCHS - Invert signal at top stacks ST(0) */
+                            ctx->fpu_stack[ctx->fpu_top] = -ctx->fpu_stack[ctx->fpu_top];
+                            break;
+
+                        case 0xE1: /* FABS - Absolute value at top stack ST(0) */
+                            ctx->fpu_stack[ctx->fpu_top] = fabs(ctx->fpu_stack[ctx->fpu_top]);
+                            break;
+
+                        case 0xEE: /* FLDZ - Set 0.0 at top */
+                            ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                            ctx->fpu_stack[ctx->fpu_top] = 0.0;
+                            break;
+
+                        case 0xED: /* FLD1 - Set 1.0 at top */
+                            ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                            ctx->fpu_stack[ctx->fpu_top] = 1.0;
+                            break;
+
+                        case 0xEA: /* FLDPI - Set PI value at top */
+                            ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                            ctx->fpu_stack[ctx->fpu_top] = 3.14159265358979323846;
+                            break;
+
+                        default:
+                            /* FLD ST(i) - Double the internal register at top */
+                            if ((modrm & 0xF8) == 0xC0) {
+                                int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
+                                double val = ctx->fpu_stack[idx];
+                                ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                                ctx->fpu_stack[ctx->fpu_top] = val;
+                            }
+                            break;
+                    }
+                    fflush(stdout);
+                }
+                else {
+                    uint8_t mem_sub_op = (modrm >> 3) & 0x07;
+                    void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
+                    if ((((modrm >> 6) & 0x03) != 3) && !mem_ptr) {
+                        printf("\n[CRITICAL GPF] Memory access violation during Opcode 0xD9\n");
+                        exit(139);
+                    }
+
+                    switch (mem_sub_op) {
+                        case 0: /* FLD m32fp - Load a 32-bit double from memory and convert to double */
+                            if (mem_ptr) {
+                                float f32_val;
+                                memcpy(&f32_val, mem_ptr, 4);
+                                ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                                ctx->fpu_stack[ctx->fpu_top] = (double)f32_val;
+                                printf("  -> FPU 287: FLD load float %f\n", f32_val);
+                            }
+                            break;
+
+                        case 2: /* FST m32fp - Store ST(0) 32-bit float on emulator memory */
+                        case 3: /* FSTP m32fp - Store ST(0) and make stack pop */
+                            if (mem_ptr) {
+                                float f32_val = (float)ctx->fpu_stack[ctx->fpu_top];
+                                memcpy(mem_ptr, &f32_val, 4);
+                                printf("  -> FPU 287: FST/FSTP store float %f on memory\n", f32_val);
+                                if (mem_sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7; /* Pop */
+                            }
+                            break;
+
+                        case 5: /* FLDCW - LHX load control word (safe Bypass) */
+                            break;
+
+                        case 7: /* FNSTCW - LHX read the control word. Return 0x037F as default */
+                            if (mem_ptr) {
+                                uint16_t cw = 0x037F;
+                                memcpy(mem_ptr, &cw, 2);
+                            }
+                            break;
+
+                        default:
+                            printf("  -> FPU 287: Sub-Opcode from memory %d emulated as No-Op safely.\n", mem_sub_op);
+                            break;
+                    }
+                    fflush(stdout);
                 }
                 break;
             }
@@ -1520,13 +1639,25 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 exit(139);
             }
 
-            /* FIXED: Variável local para armazenar o valor extraído em segurança contra desalinhamentos host */
+            /* FIXED: Local variable to avoid host misalignment */
             uint16_t operand_val = 0;
             if (operand_ptr) {
                 memcpy(&operand_val, operand_ptr, 2);
             }
 
             switch (sub_op) {
+                case 2: { /* NOT r/m16  */
+                    uint16_t inverted_res = ~operand_val;
+
+                    /* If it is a register, write directly, otherwise use memcpy */
+                    if (((modrm >> 6) & 0x03) == 3) {
+                        *operand_ptr = inverted_res;
+                    } else {
+                        memcpy(operand_ptr, &inverted_res, 2);
+                    }
+                    /* NOT do not change any flags on EFLAGS */
+                    break;
+                }
                 case 4: { /* MUL DX:AX = AX * r/m16 (Unsigned) */
                     uint32_t res = (uint32_t)ctx->ax * operand_val;
                     ctx->ax = (uint16_t)(res & 0xFFFF);
@@ -2213,6 +2344,196 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         if (dest) *dest = imm;
                         break;
                     }
+
+                    /* =========================================================================
+                     * OPCODE 0x10: ADC r/m8, r8 (Add with Carry 8-bit, Reg to r/m)
+                     * ========================================================================= */
+                    case 0x10: {
+                        uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
+
+                        /* Identify original register type (bits 3,4,5 do ModR/M) */
+                        uint8_t* src_reg = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
+
+                        /* Identify target r/m8 */
+                        uint8_t* dest_ptr = (((modrm >> 6) & 0x03) == 3)
+                        ? cpu286_get_reg8(ctx, modrm & 0x07)
+                        : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+
+                        if (!src_reg || !dest_ptr) {
+                            printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x10 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                            exit(139);
+                        }
+
+                        uint8_t src_val = *src_reg;
+                        uint8_t dest_val = *dest_ptr;
+                        uint16_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
+
+                        uint16_t temp_res = (uint16_t)dest_val + (uint16_t)src_val + carry;
+                        uint8_t final_res = (uint8_t)(temp_res & 0xFF);
+
+                        /* Update target (Regiter or Memory) */
+                        *dest_ptr = final_res;
+
+                        /* Update 286 flags */
+                        ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
+                        if (temp_res > 0xFF) ctx->flags |= CF_MASK;
+                        if (final_res == 0) ctx->flags |= ZF_MASK;
+                        if (final_res & 0x80) ctx->flags |= SF_MASK;
+                        if (!((dest_val ^ src_val) & 0x80) && ((dest_val ^ final_res) & 0x80)) ctx->flags |= OF_MASK;
+
+                        break;
+                    }
+
+                    /* =========================================================================
+                     * OPCODE 0x11: ADC r/m16, r16 (Add with Carry 16-bit, Reg to r/m)
+                     * ========================================================================= */
+                    case 0x11: {
+                        uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
+
+                        /* Identify the 16 bits type (bits 3,4,5 of ModR/M) */
+                        uint16_t* src_reg = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+
+                        /* Idetify the destination operand r/m16 */
+                        uint16_t* dest_ptr = (((modrm >> 6) & 0x03) == 3)
+                        ? cpu286_get_reg16(ctx, modrm & 0x07)
+                        : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+
+                        if (!src_reg || !dest_ptr) {
+                            printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x11 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                            exit(139);
+                        }
+
+                        /* Extractions and allignment settle */
+                        uint16_t src_val = *src_reg;
+                        uint16_t dest_val = 0;
+                        memcpy(&dest_val, dest_ptr, 2);
+
+                        uint16_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
+
+                        uint32_t temp_res = (uint32_t)dest_val + (uint32_t)src_val + carry;
+                        uint16_t final_res = (uint16_t)(temp_res & 0xFFFF);
+
+                        /* Writing back while safeguard memory alignment */
+                        if (((modrm >> 6) & 0x03) == 3) {
+                            *dest_ptr = final_res;
+                        } else {
+                            memcpy(dest_ptr, &final_res, 2);
+                        }
+
+                        /* Update 286 flags */
+                        ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
+                        if (temp_res > 0xFFFF) ctx->flags |= CF_MASK;
+                        if (final_res == 0) ctx->flags |= ZF_MASK;
+                        if (final_res & 0x8000) ctx->flags |= SF_MASK;
+                        if (!((dest_val ^ src_val) & 0x8000) && ((dest_val ^ final_res) & 0x8000)) ctx->flags |= OF_MASK;
+
+                        break;
+                    }
+
+                    /* =========================================================================
+                     * OPCODE 0x12: ADC r8, r/m8 (Add with Carry 8-bit)
+                     * ========================================================================= */
+                    case 0x12: {
+                        uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
+
+                        /* Discover the 8-bit target register (bits 3,4,5 of ModR/M) */
+                        uint8_t* dest_reg = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
+
+                        /* Find the operand in r/m8 */
+                        uint8_t* src_ptr = (((modrm >> 6) & 0x03) == 3)
+                        ? cpu286_get_reg8(ctx, modrm & 0x07)
+                        : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+
+                        if (!dest_reg || !src_ptr) {
+                            printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x12 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                            exit(139);
+                        }
+
+                        uint8_t src_val = *src_ptr;
+                        uint8_t dest_val = *dest_reg;
+                        uint8_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
+
+                        /* Execute the carry with 32 bits to evaluate more accuratly the flags */
+                        uint32_t temp_res = (uint32_t)dest_val + (uint32_t)src_val + carry;
+                        uint8_t final_res = (uint8_t)(temp_res & 0xFF);
+
+                        /* Update the target register */
+                        *dest_reg = final_res;
+
+                        /* Update EFLAGS (CF, ZF, SF, OF) as specified by Intel */
+                        ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
+
+                        /* 1. Carry Flag (CF): If the sum overflow 8 bits (255) */
+                        if (temp_res > 0xFF) ctx->flags |= CF_MASK;
+
+                        /* 2. Zero Flag (ZF): If the final 8 bits result is 0 */
+                        if (final_res == 0) ctx->flags |= ZF_MASK;
+
+                        /* 3. Sign Flag (SF): Map the MSB (bit 7) of result */
+                        if (final_res & 0x80) ctx->flags |= SF_MASK;
+
+                        /* 4. Overflow Flag (OF): If add two large integers and the result shift sign */
+                        if (!((dest_val ^ src_val) & 0x80) && ((dest_val ^ final_res) & 0x80)) {
+                            ctx->flags |= OF_MASK;
+                        }
+
+                        break;
+                    }
+
+
+                    /* =========================================================================
+                     * OPCODE 0x13: ADC r16, r/m16 (Add with Carry 16-bit) - INTEL 286 COMPATIBLE
+                     * ========================================================================= */
+                    case 0x13: {
+                        uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
+
+                        /* Discover the 16-bit target register (bits 3,4,5 do ModR/M) */
+                        uint16_t* dest_reg = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+
+                        /* Find the operand in r/m16 */
+                        uint16_t* src_ptr = (((modrm >> 6) & 0x03) == 3)
+                        ? cpu286_get_reg16(ctx, modrm & 0x07)
+                        : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+
+                        if (!dest_reg || !src_ptr) {
+                            printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x13 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                            exit(139);
+                        }
+
+                        /* safe extraction to avoid host misalignments */
+                        uint16_t src_val = 0;
+                        uint16_t dest_val = *dest_reg;
+                        memcpy(&src_val, src_ptr, 2);
+
+                        uint16_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
+
+                        /* Execute the carry with 32 bits to evaluate more accuratly the flags */
+                        uint32_t temp_res = (uint32_t)dest_val + (uint32_t)src_val + carry;
+                        uint16_t final_res = (uint16_t)(temp_res & 0xFFFF);
+
+                        /* Update the target register */
+                        *dest_reg = final_res;
+
+                        /* Update EFLAGS (CF, ZF, SF, OF) as specified by Intel */
+                        ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
+
+                        /* 1. Carry Flag (CF): If the sum overflow the 16 bits (65535) */
+                        if (temp_res > 0xFFFF) ctx->flags |= CF_MASK;
+
+                        /* 2. Zero Flag (ZF): If the 16-bits sum is 0 */
+                        if (final_res == 0) ctx->flags |= ZF_MASK;
+
+                        /* 3. Sign Flag (SF): Map BSD (bit 15) from result */
+                        if (final_res & 0x8000) ctx->flags |= SF_MASK;
+
+                        /* 4. Overflow Flag (OF): Overflow Flag (OF): If add two large integers and the result shift sign (bit 15) */
+                        if (!((dest_val ^ src_val) & 0x8000) && ((dest_val ^ final_res) & 0x8000)) {
+                            ctx->flags |= OF_MASK;
+                        }
+
+                        break;
+                    }
+
 
                     /* =========================================================================
                      * ARITHMETIC WITH CARRY EXTENSIONS (AL ACUMULATOR) - FIXED
