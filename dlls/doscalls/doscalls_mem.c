@@ -58,7 +58,7 @@ APIRET APIENTRY os2_DosAllocMem(PVOID *ppBaseAddress, ULONG cbSize, ULONG ulFlag
     }
 
     /* 2. Settle the base adress
-       If the aplicação OS/2 not specify an adress(default),
+       If the OS/2 program not specify an adress(default),
        then NTDLL select a random free adress. */
     if (ppBaseAddress && *ppBaseAddress != NULL) {
         /* If the process support random allocation */
@@ -152,13 +152,17 @@ uint16_t os2_Dos16ReAllocseg(CPU286_Context* ctx) {
     uint16_t sp_base = ctx->sp + 4; 
     
     /* 16-bit Pascal extraction */
-    uint16_t selector  = *(uint16_t*)mode16to32(ctx->ss, sp_base + 0);
-    uint16_t cbNewSize = *(uint16_t*)mode16to32(ctx->ss, sp_base + 2);
+    uint16_t selector_offset  = *(uint16_t*)mode16to32(ctx->ss, sp_base + 0);
+    uint16_t selector_adress  = *(uint16_t*)mode16to32(ctx->ss, sp_base + 2);
+    uint16_t cbNewSize = *(uint16_t*)mode16to32(ctx->ss, sp_base + 4);
     
     uint16_t ldt_index;
+    uint16_t* selector;
     ULONG new_size;
     void* old_host_ptr;
     void* new_host_ptr;
+
+    selector = (uint16_t*)mode16to32(selector_adress, selector_offset);
 
     ldt_index = selector >> 3;
     if (!virtual_ldt || ldt_index >= 8192 || !virtual_ldt[ldt_index].present) {
@@ -167,7 +171,7 @@ uint16_t os2_Dos16ReAllocseg(CPU286_Context* ctx) {
 
     new_size = (cbNewSize == 0) ? 65536 : cbNewSize;
 
-    /* Search the original selector */
+    /* Get the original selector */
     old_host_ptr = (void*)(uintptr_t)virtual_ldt[ldt_index].base;
     
     /* Update safely the selector */
