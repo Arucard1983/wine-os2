@@ -19,6 +19,10 @@ OS2_LDT_ENTRY* virtual_ldt = NULL;
 typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
 typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 
+void** runtime_interrupt_vectors = NULL;
+typedef void* (CDECL *PFN_wineos2_get_interrupt_vectors_ptr)(void);
+
+
 /* Manual redeclarations of NTDLL functions not conflicting with winternl.h */
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE handle, NTSTATUS exit_status);
 
@@ -207,6 +211,12 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 
         pfnGetLdt = (PFN_wineos2_get_ldt_ptr)GetProcAddress(hCore, "wineos2_get_ldt_ptr");
         if (pfnGetLdt) virtual_ldt = (OS2_LDT_ENTRY*)pfnGetLdt();
+
+        PFN_wineos2_get_interrupt_vectors_ptr pfnGetVectors =
+        (PFN_wineos2_get_interrupt_vectors_ptr)GetProcAddress(hCore, "wineos2_get_interrupt_vectors_ptr");
+        if (pfnGetVectors) {
+            runtime_interrupt_vectors = (void**)pfnGetVectors();
+        }
 
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) return FALSE;

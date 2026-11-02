@@ -16,7 +16,7 @@
 #define WINEOS2_REG_ENV "Software\\Wine\\WineOS2\\Environment"
 
 /* FIX: Correctly allocated a real array of 256 pointers for software interrupt vectors */
-static void* os2_interrupt_vectors[256] = { NULL };
+extern void** runtime_interrupt_vectors;
 
 /* Internal helper routing method to pull registry settings variables dynamically */
 static BOOL read_wineos2_reg_string(const char* value_name, char* out_buf, DWORD buf_size) {
@@ -64,6 +64,12 @@ APIRET CDECL os2_DosGetMachineMode(PBYTE pMode) {
     LONG res;
 
     if (!pMode) return 87; /* ERROR_INVALID_PARAMETER */
+
+        res = RegOpenKeyExA(HKEY_LOCAL_MACHINE, WINEOS2_REG_ENV, 0, KEY_READ, &hKey);
+    if (res == ERROR_SUCCESS) {
+        res = RegQueryValueExA(hKey, "OS2MachineMode", NULL, &type, (LPBYTE)&mode_val, &size);
+        RegCloseKey(hKey);
+    }
 
     *pMode = (BYTE)mode_val;
     return NO_ERROR;
@@ -124,12 +130,16 @@ APIRET CDECL os2_DosSearchPath(ULONG flags, const char* pszPathRef, const char* 
 }
 
 APIRET CDECL os2_DosSetVec(ULONG vecNum, PVOID pHandler, PVOID pPrevHandler) {
-    if (vecNum >= 256) return 87;
+    printf("[DOSCALLS] DosSetVec with %i interrupt.\n",vecNum);
+    fflush(stdout);
+
+    if (vecNum >= 256 || !runtime_interrupt_vectors) return 87;
 
     if (pPrevHandler) {
-        *(PVOID*)pPrevHandler = os2_interrupt_vectors[vecNum];
+        uint32_t* pPrev32 = (uint32_t*)pPrevHandler;
+        *pPrev32 = 0; //previous handle should be cleared
     }
-    os2_interrupt_vectors[vecNum] = pHandler;
+    runtime_interrupt_vectors[vecNum] = pHandler;
     return NO_ERROR;
 }
 
@@ -202,15 +212,29 @@ uint16_t os2_Dos16SearchPath(CPU286_Context* ctx) {
 uint16_t os2_Dos16SetVec(CPU286_Context* ctx) {
     uint16_t sp_offset = ctx->sp + 4;
 
-    uint16_t vecNum       = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t hand_sel     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t hand_off     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t prev_sel     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t prev_off     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t vecNum   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
+    uint16_t hand_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
+    uint16_t hand_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
+    uint16_t prev_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
+    uint16_t prev_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+
+    printf("[DOSCALLS 16-BIT] Dos16SetVec Called:\n");
+    printf("  -> Interruption Vector: %d\n", vecNum);
+    printf("  -> New handler (R3): %04X:%04X\n", hand_sel, hand_off);
+    printf("  -> Previous Return Pointer: %04X:%04X\n", prev_sel, prev_off);
+    fflush(stdout);
+
+    void* host_prev = NULL;
+    if (prev_sel != 0 || prev_off != 0) {
+        host_prev = mode16to32(prev_sel, prev_off);
+    } else {
+        printf("[DOSCALLS 16-BIT] Previous handler is NULL. Blocked against random write\n");
+        fflush(stdout);
+    }
 
     void* host_hand = mode16to32(hand_sel, hand_off);
-    void* host_prev = mode16to32(prev_sel, prev_off);
 
     APIRET rc = os2_DosSetVec((ULONG)vecNum, host_hand, host_prev);
     return (uint16_t)rc;
 }
+
