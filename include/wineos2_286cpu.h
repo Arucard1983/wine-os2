@@ -14,6 +14,7 @@
 /* Forward declaration of the CPU context so the LDT structure can reference it */
 struct CPU286_Context;
 typedef struct struct_CPU286_Context CPU286_Context;
+static inline void cpu286_trigger_protected_exception(CPU286_Context* ctx, uint8_t vector, uint16_t original_ip);
 
 /* 286 Segment Descriptor (Protected Mode) - 32-bit Host Compliant */
 typedef struct {
@@ -140,6 +141,7 @@ static inline int mode32to16(const void* flat_ptr, uint16_t* out_selector, uint1
     }
     return 0;
 }
+
 
 static inline void cpu286_update_flags16(CPU286_Context* ctx, uint32_t result) {
     if ((result & 0xFFFF) == 0) ctx->flags |= ZF_MASK; else ctx->flags &= ~ZF_MASK; /* FIX: ZF_MASK */
@@ -344,18 +346,39 @@ static inline uint8_t execute_shift_rotate8(CPU286_Context* ctx, uint8_t val, ui
 }
 
 /* 287 auxiliary functions */
+
+#pragma pack(push, 1)
+typedef struct {
+    uint64_t significand; /* 64 bits Mantissa*/
+    uint16_t exponent;    /* 15 bits exponent + Signal (bit 15) */
+} x87_packed_float80;
+#pragma pack(pop)
+
 static inline long double fpu_read_m80(void* mem_ptr) {
     if (!mem_ptr) return 0.0L;
-    long double val = 0.0L;
-    // Even on 32-bits builds, the long double is native to 80-bits format
-    memcpy(&val, mem_ptr, 10);
-    return val;
+
+    long double host_ld = 0.0L;
+
+    // Read first 10 bytes
+    x87_packed_float80 packed;
+    memcpy(&packed, mem_ptr, 10);
+
+    // native 32-64 bits handles the format
+    memcpy(&host_ld, &packed, 10);
+
+    return host_ld;
 }
 
 static inline void fpu_write_m80(void* mem_ptr, long double val) {
     if (!mem_ptr) return;
-    // Extract the first 10 significative digits from host
-    memcpy(mem_ptr, &val, 10);
+
+    x87_packed_float80 packed;
+
+    // Read first 10 bytes
+    memcpy(&packed, &val, 10);
+
+    // Write first 10 bytes
+    memcpy(mem_ptr, &packed, 10);
 }
 
 static inline void fpu_update_status_compare(CPU286_Context* ctx, long double st0, long double op) {
@@ -392,12 +415,50 @@ static inline void cpu286_update_logical_flags16(CPU286_Context* ctx, uint32_t r
     ctx->flags &= ~OF_MASK; /* Logical ops clear Overflow */
 }
 
+extern void* os2_interrupt_vectors[256];
+
+static inline void cpu286_trigger_protected_exception(CPU286_Context* ctx, uint8_t vector, uint16_t original_ip) {
+     void* handler_target = os2_interrupt_vectors[vector];
+
+    if (!handler_target) {
+        printf("\n[CPU PROTECTED TRAP] Unhandled Hardware Exception #%02X at CS:IP = %04X:%04X\n",
+               vector, ctx->cs, original_ip);
+        exit(139);
+    }
+
+    /* 1. Making IP backward to the begining of the failed opcode (The expected behaviour when an interruption is triggered) */
+    ctx->ip = original_ip;
+
+    /* 2. Place the Status on 16-bit Protected Mode */
+    cpu286_push16(ctx, ctx->flags);
+    cpu286_push16(ctx, ctx->cs);
+    cpu286_push16(ctx, ctx->ip);
+
+    /* 3.  Clean CPU control flags  (like if Trap Flag did exist) */
+    ctx->flags &= ~0x0100;
+
+    /* 4. Transfer to the register defined by Seletor:Offset using OS/2 with DosSetVec */
+    uint16_t target_selector = 0;
+    uint16_t target_offset = 0;
+    if (mode32to16(handler_target, &target_selector, &target_offset)) {
+        ctx->cs = target_selector;
+        ctx->ip = target_offset;
+    } else {
+        printf("[CRITICAL] Failed to map OS/2 exception handler to 16-bit space.\n");
+        exit(139);
+    }
+}
+
+
+
 /* Expanded Ring 3 Instruction Interpreter Execution Loop Step */
 static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
     uint8_t* code_stream;
     uint8_t opcode;
     uint8_t prefix = 0;
+
+    uint16_t instruction_start_ip = ctx->ip;
 
     re_execute:
     /* Get the real host pointer from current cycle IP */
@@ -552,6 +613,11 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * ========================================================================= */
 
             case 0xD8: {
+                if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
+                    // Interpreter had advanced one byte at this stage, which was the opcode itself
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07; // Safe extraction
 
@@ -608,6 +674,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * FPU ESCAPE GROUP 0xDD: Temporary Real (80-bit) Loads/Stores e Double Precision
              * ========================================================================= */
             case 0xDD: {
+
+                if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
+
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 if (modrm >= 0xC0) {
                     // Call to register (Ex: FFFREE, FXCH, FST ST(i))
@@ -661,6 +733,26 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * FPU (x87) ESCAPE GROUP 0xD9: FLOATING-POINT - Using HLE with math.h
              * ========================================================================= */
             case 0xD9: {
+
+                /* 1. Check ModR/M to check non-Waiting FPU opcodes */
+                uint8_t peak_modrm = *(code_stream + 1);
+
+                /* Non-Signal Variants of D9:
+                 * FINIT/FNINIT (0xE3), FLDENV (sub_op 4), FLDCW (sub_op 5), FNSTENV (sub_op 6), FNSTCW (sub_op 7) */
+                int is_no_wait = 0;
+                if (peak_modrm >= 0xC0) {
+                    if (peak_modrm == 0xE3) is_no_wait = 1; // FNINIT
+                } else {
+                    uint8_t sub_op = (peak_modrm >> 3) & 0x07;
+                    if (sub_op >= 4 && sub_op <= 7) is_no_wait = 1; // FLDENV, FLDCW, FNSTENV, FNSTCW
+                }
+
+                /* 2. Signal opcodes will validate pending interrupts */
+                if (!is_no_wait && ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F))) {
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
+
                 uint8_t modrm = *args_ptr;
                 ctx->ip++;
                 args_ptr++;
@@ -797,6 +889,15 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * FPU ESCAPE GROUP 0xDB: 32-bits integers (FILD/FISTP), m80BCD and FSETPM
              * ========================================================================= */
             case 0xDB: {
+
+                uint8_t peak_modrm = *(code_stream + 1);
+                int is_no_wait = (peak_modrm == 0xE3 || peak_modrm == 0xE4); // FNINIT ou FSETPM
+
+                if (!is_no_wait && ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F))) {
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
+
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
@@ -890,6 +991,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * FPU ESCAPE GROUP 0xDA: 32-bit Integers Arithmetic (Only Memory)
              * ========================================================================= */
             case 0xDA: {
+
+                if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
+
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
@@ -917,6 +1024,15 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * FPU ESCAPE GROUP 0xDF:  16-bits Integers Operations and Status Word
              * ========================================================================= */
             case 0xDF: {
+
+                uint8_t peak_modrm = *(code_stream + 1);
+                int is_no_wait = (peak_modrm == 0xE0); // FNSTSW AX
+
+                if (!is_no_wait && ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F))) {
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
+
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
 
                 // 1. The ONLY 80287 new opcode beyond 8087, which gives Status World to AX!
@@ -968,6 +1084,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * FPU ESCAPE GROUP 0xDE: 16-bits Arithmetic with implicit POP
              * ========================================================================= */
             case 0xDE: {
+
+                if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
+
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
@@ -1008,6 +1130,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * FPU ESCAPE GROUP 0xDC: Double Precision Arithmetic (64-bit double)
              * ========================================================================= */
             case 0xDC: {
+
+                if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
+                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    return;
+                }
+
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
@@ -1332,7 +1460,11 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
          * INTEL 286 SYNC OF 287 - FWAIT
          * ========================================================================= */
         case 0x9B: { // FWAIT / WAIT
-            //No-Op for now
+            if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
+                // Call #MF (INT 10h), this instruction had 1 byte
+                cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                return;
+            }
             break;
         }
 
@@ -1859,6 +1991,44 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 }
 
 
+                /* =========================================================================
+                 * INTERRUPT RETURN (IRET) - MODODE PROTEGIDO DO 286 (RING 3 COMPLIANT)
+                 * ========================================================================= */
+                case 0xCF: { /* IRET - Interrupt Return */
+                    /* 1. Retrieve the three critical parameters from the virtual stack */
+                    uint16_t target_ip    = cpu286_pop16(ctx);
+                    uint16_t target_cs    = cpu286_pop16(ctx);
+                    uint16_t target_flags = cpu286_pop16(ctx);
+
+                    /* 2. Safety check from the selector (CS)
+                     * A null selector (0x0000-0x0003) on return will fire #GP(0) */
+                    if ((target_cs >> 3) == 0) {
+                        printf("[CPU TRAP] #GP(0) during IRET: Attempted to return to null selector!\n");
+                        exit(139);
+                    }
+
+                    /* 3. Check if the selector is in the virtual LDT */
+                    uint16_t ldt_index = target_cs >> 3;
+                    if (ldt_index >= LDT_MAX_ENTRIES || !virtual_ldt[ldt_index].present) {
+                        printf("[CPU TRAP] #GP(Selector) during IRET: Return selector 0x%04X invalid or Unknown.\n", target_cs);
+                        exit(139);
+                    }
+
+                    /* 4. Restaure falgs using the Intel specifications on Ring 3.
+                     * Mask 0xCF15 preserve the guest fundamental flags (CF, PF, AF, ZF, SF, TF, DF, OF).
+                     * Bits IOPL (bits 12-13) and NT (bit 14) CANNOT by change on Ring 3 using stack. */
+                    uint16_t protected_mask = 0xCF15;
+                    ctx->flags = (ctx->flags & ~protected_mask) | (target_flags & protected_mask);
+
+                    /* 5. Update atomically the CPU flags */
+                    ctx->cs = target_cs;
+                    ctx->ip = target_ip;
+
+                    printf("[CPU TRACE] IRET executed successful. Retorn to %04X:%04X | Flags: %04X\n",
+                           ctx->cs, ctx->ip, ctx->flags);
+                    fflush(stdout);
+                    break;
+                }
 
 
         
@@ -2167,8 +2337,9 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 }
                 case 6: { /* DIV AX = DX:AX / r/m16, DX = Remainder (Unsigned) */
                     if (operand_val == 0) {
-                        printf("\n[CRITICAL CPU STOP] Division by Zero (Unsigned 16-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
-                        exit(139);
+                        printf("\n[CRITICAL CPU STOP] Division by Zero (Signed 16-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
+                        cpu286_trigger_protected_exception(ctx, 0x00, instruction_start_ip);
+                        return;
                     }
                     uint32_t num = ((uint32_t)ctx->dx << 16) | ctx->ax;
                     uint32_t quot = num / operand_val;
@@ -2184,7 +2355,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     int16_t val = (int16_t)operand_val;
                     if (val == 0) {
                         printf("\n[CRITICAL CPU STOP] Division by Zero (Signed 16-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
-                        exit(139);
+                        cpu286_trigger_protected_exception(ctx, 0x00, instruction_start_ip);
+                        return;
                     }
                     int32_t num = (int32_t)(((uint32_t)ctx->dx << 16) | ctx->ax);
                     int32_t quot = num / val;
@@ -2271,7 +2443,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 case 6: { /* DIV AX / r/m8 (non assignment Division) */
                     if (operand_val == 0) {
                         printf("\n[CRITICAL CPU STOP] Division by Zero (Unsigned 8-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
-                        exit(139);
+                        cpu286_trigger_protected_exception(ctx, 0x00, instruction_start_ip);
+                        return;
                     }
                     uint32_t quot = (uint32_t)ctx->ax / operand_val;
                     if (quot > 0xFF) {
@@ -2287,7 +2460,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     int8_t val = (int8_t)operand_val;
                     if (val == 0) {
                         printf("\n[CRITICAL CPU STOP] Division by Zero (Signed 8-bit) at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
-                        exit(139);
+                        cpu286_trigger_protected_exception(ctx, 0x00, instruction_start_ip);
+                        return;
                     }
                     int32_t quot = (int32_t)(int16_t)ctx->ax / val;
                     if (quot > 127 || quot < -128) {
@@ -2403,6 +2577,14 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             args_ptr++; /* FIXED: Sync the system pointers */
             if (int_vector == 0x21) {
                 printf("[API HOOK] INT 21h triggered. AX=%04X\n", ctx->ax);
+            }
+            break;
+        }
+
+        case 0xCE: { /* INTO - Interrupt on Overflow */
+            if (ctx->flags & OF_MASK) { /* If Overflow bit is active */
+                cpu286_trigger_protected_exception(ctx, 0x04, instruction_start_ip);
+                return;
             }
             break;
         }
@@ -3462,7 +3644,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                 uint8_t mod = (modrm >> 6) & 0x03;
                                 if (mod == 3) {
                                     printf("[CPU TRAP] Invalid ModR/M mod=3 for BOUND instruction at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
-                                    exit(139);
+                                    cpu286_trigger_protected_exception(ctx, 0x06, instruction_start_ip);
+                                    return;
                                 }
 
                                 /* Obtain the indes register */
@@ -3488,7 +3671,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                     if (index_val < low_bound || index_val > high_bound) {
                                         printf("\n[CPU TRAP] INT 5: BOUND Range Exceeded! Index: %d | Range: [%d, %d] at CS:IP = %04X:%04X\n",
                                                index_val, low_bound, high_bound, ctx->cs, base_ip - 1);
-                                        exit(139); /* Fatal failure due to array outbonds. */
+                                        cpu286_trigger_protected_exception(ctx, 0x05, instruction_start_ip);
+                                        return;
                                     }
                                 }
                                 break;
@@ -3796,7 +3980,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                 default:
                                     printf("\n[CRITICAL CPU STOP] Unsupported/Unimplemented Opcode: 0x%02X at CS:IP = %04X:%04X\n",
                                            opcode, ctx->cs, ctx->ip - 1);
-                                    exit(139);
+                                    cpu286_trigger_protected_exception(ctx, 0x06, instruction_start_ip);
+                                    exit(139); //It should be return, but when all opcodes are done it will be placed.
                                     break;
   }
    ctx->rep_prefix = 0; //Clear global prefix before to pass next instruction
