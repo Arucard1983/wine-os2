@@ -382,20 +382,21 @@ static inline void fpu_write_m80(void* mem_ptr, long double val) {
 }
 
 static inline void fpu_update_status_compare(CPU286_Context* ctx, long double st0, long double op) {
-    // condition Bit Masks of Status Word from 287:
-    // C0 = bit 8 (0x0100), C2 = bit 10 (0x0400), C3 = bit 14 (0x4000)
-    uint16_t clear_mask = ~(0x0100 | 0x0400 | 0x4000);
+    // BIt masks of 80287:
+    // C0 = bit 8 (0x0100), C1 = bit 9 (0x0200), C2 = bit 10 (0x0400), C3 = bit 14 (0x4000)
+    // FIX: Clean also C1 (0x0200) to avoid trash of previous conditions
+    uint16_t clear_mask = ~(0x0100 | 0x0200 | 0x0400 | 0x4000);
 
-    // NOTE: If using FPU287_Environment16 or storing status_word by context,
-    // We need a local variable for context.
-    // To simplify the interpreter, we can store 'fpu_status_word' on ctx:
     ctx->env16.status_word &= clear_mask;
 
     if (isnan(st0) || isnan(op)) {
-        // Invalid case (Unordered)
+        // Invalid case / Not comparable (Unordered)
         ctx->env16.status_word |= (0x0100 | 0x0400 | 0x4000); // C0=1, C2=1, C3=1
+
+        // FIX: Real 80287 real singlas Invalid Operation Exception (#IE) on biy 0
+        ctx->env16.status_word |= 0x0001;
     } else if (st0 > op) {
-        // ST0 > Operand: C3=0, C2=0, C0=0 (nothing to do, already cleaned)
+        // ST0 > Operand: C3=0, C2=0, C0=0 (Já limpo pela clear_mask)
     } else if (st0 < op) {
         // ST0 < Operand: C3=0, C2=0, C0=1
         ctx->env16.status_word |= 0x0100;
@@ -404,8 +405,6 @@ static inline void fpu_update_status_compare(CPU286_Context* ctx, long double st
         ctx->env16.status_word |= 0x4000;
     }
 }
-
-
 
 /* Helper to update flags for logical operations (AND, OR, XOR) */
 static inline void cpu286_update_logical_flags16(CPU286_Context* ctx, uint32_t result) {
@@ -609,17 +608,16 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
             /* =========================================================================
-             * FPU ESCAPE GROUP 0xD8: Reg-to-Reg and Arithmetic Comparations
+             * FPU ESCAPE GROUP 0xD8: Reg-to-Reg and Single-Precision (32-bit) Arithmetic
+             * STRICT 80287 IMPLEMENTATION
              * ========================================================================= */
-
             case 0xD8: {
                 if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
-                    // Interpreter had advanced one byte at this stage, which was the opcode itself
                     cpu286_trigger_protected_exception(ctx, 0x10, 1);
                     return;
                 }
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
-                uint8_t sub_op = (modrm >> 3) & 0x07; // Safe extraction
+                uint8_t sub_op = (modrm >> 3) & 0x07;
 
                 if (modrm >= 0xC0) { /* Reg-to-Reg Operations */
                     int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
@@ -627,46 +625,54 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     long double target = ctx->fpu_stack[idx];
 
                     switch (sub_op) {
-                        case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FADD
-                        case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FMUL
+                        case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FADD ST(0), ST(i)
+                        case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FMUL ST(0), ST(i)
                         case 2: // FCOM ST(i)
                         case 3: // FCOMP ST(i)
                             fpu_update_status_compare(ctx, st0, target);
                             if (sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
                             break;
-                        case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FSUB (ST0 = ST0 - target)
-                        case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FSUBR (ST0 = target - ST0)
-                        case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FDIV (ST0 = ST0 / target)
-                        case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FDIVR (ST0 = target / ST0)
+                        case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FSUB ST(0), ST(i)
+                        case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FSUBR ST(0), ST(i)
+                        case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FDIV ST(0), ST(i)
+                        case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FDIVR ST(0), ST(i)
+                        default:
+                            cpu286_trigger_protected_exception(ctx, 0x06, 0); // #UD INT 6
+                            return;
                     }
                 } else { /* Memory Operation with 32-bits (float) */
                     void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
-                    if (mem_ptr) {
-                        float f32_val;
-                        memcpy(&f32_val, mem_ptr, 4);
-                        long double target = (long double)f32_val;
-                        long double st0 = ctx->fpu_stack[ctx->fpu_top];
 
-                        switch (sub_op) {
-                            case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FADD
-                            case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FMUL
-                            case 2: // FCOM m32fp
-                            case 3: // FCOMP m32fp
-                                fpu_update_status_compare(ctx, st0, target);
-                                if (sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
-                                break;
-                            case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FSUB
-                            case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FSUBR
-                            case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FDIV
-                            case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FDIVR
-                        }
-                    } else {
+                    // FIX: Check before read or copy
+                    if (!mem_ptr) {
                         printf("[CPU TRAP] GPF(0) at Opcode 0xD8: Failure to decode ModR/M on memory\n");
                         exit(139);
+                    }
+
+                    float f32_val;
+                    memcpy(&f32_val, mem_ptr, 4); // Safety copy against host misalignements
+                    long double target = (long double)f32_val;
+                    long double st0 = ctx->fpu_stack[ctx->fpu_top];
+
+                    switch (sub_op) {
+                        case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FADD m32fp
+                        case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FMUL m32fp
+                        case 2: // FCOM m32fp
+                        case 3: // FCOMP m32fp
+                            fpu_update_status_compare(ctx, st0, target);
+                            if (sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
+                            break;
+                        case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FSUB m32fp
+                        case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FSUBR m32fp
+                        case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FDIV m32fp
+                        case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FDIVR m32fp
+                        default:
+                            break;
                     }
                 }
                 break;
             }
+
 
 
 
@@ -684,12 +690,28 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 if (modrm >= 0xC0) {
                     // Call to register (Ex: FFFREE, FXCH, FST ST(i))
                     int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
-                    switch ((modrm >> 3) & 0x07) {
+                    uint8_t reg_sub_op = (modrm >> 3) & 0x07;
+                    switch (reg_sub_op) {
+                        case 0: { /* FFREE ST(i) (0xC0 - 0xC7) */
+                            // Release the registers clearing their 2 bits of Tag Word to 11b (Empty)
+                            ctx->env16.tag_word |= (3 << (idx * 2));
+                            break;
+                        }
+                        case 1: { /* FXCH ST(i) (Alternate / Undocumented 0xC8 - 0xCF) */
+                            long double tmp = ctx->fpu_stack[ctx->fpu_top];
+                            ctx->fpu_stack[ctx->fpu_top] = ctx->fpu_stack[idx];
+                            ctx->fpu_stack[idx] = tmp;
+                            break;
+                        }
                         case 2: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top]; break; // FST ST(i)
                         case 3: // FSTP ST(i)
                             ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top];
                             ctx->fpu_top = (ctx->fpu_top + 1) & 7;
                             break;
+                        default:
+                            printf("\n[CRITICAL FPU] Invalid x87 Reg Opcode: 0xDD 0x%02X at CS:IP = %04X:%04X\n", modrm, ctx->cs, ctx->ip - 2);
+                            cpu286_trigger_protected_exception(ctx, 0x06, 0); // #UD
+                            return;
                     }
                 } else {
                     void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
@@ -710,12 +732,23 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                 if (mem_sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7;
                             }
                             break;
+                        case 4: // FRSTOR m94byte (Restaure environement 8 registers of FPU)
+                            // Note: On 16-bits mode of 287, state block occupy 94 bytes.
+                            memcpy(&ctx->env16, mem_ptr, sizeof(FPU287_Environment16));
+                            ctx->fpu_top = (ctx->env16.status_word >> 11) & 0x07;
+                            memcpy(ctx->fpu_stack, (uint8_t*)mem_ptr + sizeof(FPU287_Environment16), 8 * sizeof(long double));
+                            break;
                         case 5: // FLD m80fp (The infamous 80-bit double from 286 era!)
                             if (mem_ptr) {
                                 long double f80_converted = fpu_read_m80(mem_ptr);
                                 ctx->fpu_top = (ctx->fpu_top - 1) & 7;
                                 ctx->fpu_stack[ctx->fpu_top] = f80_converted;
                             }
+                            break;
+                        case 6: // FSAVE / FNSAVE m94byte (Store environement 8 registers of FPU)
+                            ctx->env16.status_word = (ctx->env16.status_word & ~(0x07 << 11)) | ((ctx->fpu_top & 0x07) << 11);
+                            memcpy(mem_ptr, &ctx->env16, sizeof(FPU287_Environment16));
+                            memcpy((uint8_t*)mem_ptr + sizeof(FPU287_Environment16), ctx->fpu_stack, 8 * sizeof(long double));
                             break;
                         case 7: // FSTP m80fp (Store 80-bits and makes POP)
                             if (mem_ptr) {
@@ -769,12 +802,23 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         ctx->env16.status_word  = 0x0000;
                         ctx->env16.tag_word     = 0xFFFF;
                         break;
+                        case 0xD0: /* FNOP - FPU No Operation */
+                            break;
+                        case 0xF6: /* FDECSTP - Decrement Stack Pointer */
+                            ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                            break;
+                        case 0xF7: /* FINCSTP - Increment Stack Pointer */
+                            ctx->fpu_top = (ctx->fpu_top + 1) & 7;
+                            break;
                         case 0xE0: ctx->fpu_stack[ctx->fpu_top] = -ctx->fpu_stack[ctx->fpu_top]; break; /* FCHS */
                         case 0xE1: ctx->fpu_stack[ctx->fpu_top] = fabsl(ctx->fpu_stack[ctx->fpu_top]); break; /* FABS */
                         case 0xEE: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 0.0L; break; /* FLDZ */
-                        case 0xED: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 1.0L; break; /* FLD1 */
+                        case 0xE8: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 1.0L; break; /* FLD1 */
+                        case 0xE9: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 3.32192809488736234787L; break; /* FLDL2T */
                         case 0xEA: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 1.4426950408889634074L; break; /* FLDL2E */
                         case 0xEB: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 3.14159265358979323846L; break; /* FLDPI */
+                        case 0xEC: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 0.30102999566398119521L; break; /* FLDLG2 */
+                        case 0xED: ctx->fpu_top = (ctx->fpu_top - 1) & 7; ctx->fpu_stack[ctx->fpu_top] = 0.69314718055994528622L; break; /* FLDLN2 */
                         case 0xF0: ctx->fpu_stack[ctx->fpu_top] = powl(2.0L, ctx->fpu_stack[ctx->fpu_top]) - 1.0L; break; /* F2XM1 */
                         case 0xFA: ctx->fpu_stack[ctx->fpu_top] = sqrtl(ctx->fpu_stack[ctx->fpu_top]); break; /* FSQRT */
                         case 0xF2: { /* FPTAN  */
@@ -812,15 +856,174 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                             ctx->fpu_top = (ctx->fpu_top + 1) & 7;
                             break;
                         }
+                        case 0xFC: { /* FRNDINT - Round to Integer */
+                            long double value = ctx->fpu_stack[ctx->fpu_top];
+                            long double result;
 
-                        default:
-                            if ((modrm & 0xF8) == 0xC0) { /* FLD ST(i) */
-                                int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
-                                long double val = ctx->fpu_stack[idx];
+                            // Require the Rounding Control (bits 10 and 11) from Control Word of 287
+                            uint16_t rc = (ctx->env16.control_word & 0x0C00) >> 10;
+
+                            switch (rc) {
+                                case 0: // 00B: Round to nearest or even
+                                    result = rintl(value);
+                                    break;
+                                case 1: // 01B: Round Down with -infinity
+                                    result = floorl(value);
+                                    break;
+                                case 2: // 10B: Round Up with +infinity
+                                    result = ceill(value);
+                                    break;
+                                case 3: // 11B: Chop / Truncate (Going to zero)
+                                    result = truncl(value);
+                                    break;
+                            }
+
+                            // NOTE: Inexact/Precision Flag (#P)
+                            // On real FPU, if the result is different from the round,
+                            // bit 5 (PE) of Status Word should be activated.
+                            if (result != value) {
+                                ctx->env16.status_word |= 0x0020; // Activate bit PE (Precision Exception)
+                            }
+
+                            // The result is finally stored on the top ST(0) register
+                            ctx->fpu_stack[ctx->fpu_top] = result;
+                            break;
+                        }
+                        case 0xFD: { /* FSCALE - Scale ST(0) by ST(1) */
+                            int idx_st1 = (ctx->fpu_top + 1) & 7;
+                            long double val_st0 = ctx->fpu_stack[ctx->fpu_top];
+                            long double val_st1 = ctx->fpu_stack[idx_st1];
+
+                            // Real FPU truncate ST(1) near to zero
+                            // to obtain an interger before applying the exponent.
+                            long int exp = (long int)truncl(val_st1);
+
+                            // scalbnl apply val_st0 * (2^exp) straightforward
+                            ctx->fpu_stack[ctx->fpu_top] = scalbnl(val_st0, exp);
+                            break;
+                        }
+
+                        case 0xF8: { /* FPREM - Partial Remainder */
+                            int idx_st1 = (ctx->fpu_top + 1) & 7;
+                            long double st0 = ctx->fpu_stack[ctx->fpu_top];
+                            long double st1 = ctx->fpu_stack[idx_st1];
+
+                            // Clear Conditions bits C0, C1, C2, C3 from Status Word (bits 8, 9, 10, 14)
+                            ctx->env16.status_word &= ~(0x4700);
+
+                            if (st1 == 0.0L) {
+                                ctx->env16.status_word |= 0x0400; // Set C2 if Division by zero or invalid
+                                break;
+                            }
+
+                            // Nota: Real FPREM reduced up to maximum of 64.
+                            // An HLE approximation with fmodl evaluate the remainder quickly.
+                            long double rem = fmodl(st0, st1);
+                            long long quotient = (long long)truncl(st0 / st1);
+
+                            // Uodate condition bits based on 3 bits less significative on quotient
+                            if (quotient & 1) ctx->env16.status_word |= 0x0200; // C1 = Q0
+                            if (quotient & 2) ctx->env16.status_word |= 0x4000; // C3 = Q1
+                            if (quotient & 4) ctx->env16.status_word |= 0x0100; // C0 = Q2
+
+                            // C2 = 0 means the reduction is completed
+                            ctx->fpu_stack[ctx->fpu_top] = rem;
+                            break;
+                        }
+
+                        case 0xF4: { /* FXTRACT - Extract Exponent and Significand */
+                            long double val = ctx->fpu_stack[ctx->fpu_top];
+
+                            if (val == 0.0L) {
+                                // Special caso for zero
+                                ctx->fpu_stack[ctx->fpu_top] = -INFINITY; // Expoente
                                 ctx->fpu_top = (ctx->fpu_top - 1) & 7;
-                                ctx->fpu_stack[ctx->fpu_top] = val;
+                                ctx->fpu_stack[ctx->fpu_top] = 0.0L;      // Mantissa
+                            } else {
+                                int exp = ilogbl(val);
+                                long double mantissa = scalbnl(val, -exp);
+
+                                ctx->fpu_stack[ctx->fpu_top] = (long double)exp; // ST(0) goes exponent
+                                ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                                ctx->fpu_stack[ctx->fpu_top] = mantissa;         // New ST(0) é mantissa
                             }
                             break;
+                        }
+                        case 0xE4: { /* FTST - Test ST(0) against 0.0 */
+                            long double val = ctx->fpu_stack[ctx->fpu_top];
+
+                            // Clear C0, C2, C3 (bits 8, 10, 14)
+                            ctx->env16.status_word &= ~(0x4500);
+
+                            if (isnan(val)) {
+                                ctx->env16.status_word |= 0x4500; // C3=1, C2=1, C0=1 (Not comaprable)
+                            } else if (val > 0.0L) {
+                                // C3=0, C2=0, C0=0 (ST(0) > 0)
+                            } else if (val < 0.0L) {
+                                ctx->env16.status_word |= 0x0100; // C0=1 (ST(0) < 0)
+                            } else {
+                                ctx->env16.status_word |= 0x4000; // C3=1 (ST(0) == 0.0)
+                            }
+                            break;
+                        }
+                        case 0xE5: { /* FXAM - Examine ST(0) */
+                            long double val = ctx->fpu_stack[ctx->fpu_top];
+
+                            // Clear C0, C1, C2, C3=CC
+                            ctx->env16.status_word &= ~(0x4700);
+
+                            // Set bit C1 with number signal (1 for negative, 0 for positive)
+                            if (signbit(val)) ctx->env16.status_word |= 0x0200;
+
+                            int classification = fpclassify(val);
+                            switch (classification) {
+                                case FP_NAN:
+                                    ctx->env16.status_word |= 0x0100; // C0=1 (NaN)
+                                    break;
+                                case FP_INFINITE:
+                                    ctx->env16.status_word |= 0x0500; // C2=1, C0=1 (Infinity)
+                                    break;
+                                case FP_ZERO:
+                                    ctx->env16.status_word |= 0x4000; // C3=1 (Zero)
+                                    break;
+                                case FP_SUBNORMAL:
+                                    ctx->env16.status_word |= 0x4400; // C3=1, C2=1 (Subnormal)
+                                    break;
+                                case FP_NORMAL:
+                                    ctx->env16.status_word |= 0x0400; // C2=1 (Normal)
+                                    break;
+                            }
+                            // Note: If empty on real FPU real use C3=1, C0=1, but since
+                            // the HLE start with 0.0L, always fall with FP_ZERO/FP_NORMAL.
+                            break;
+                        }
+                        case 0xC0: case 0xC1: case 0xC2: case 0xC3: /*FLD ST(i) - Load Floating-Point Value from Stack Register (0xC0 - 0xC7)*/
+                        case 0xC4: case 0xC5: case 0xC6: case 0xC7: {
+                                    int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
+                                    long double val = ctx->fpu_stack[idx];
+
+                                    ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                                    ctx->fpu_stack[ctx->fpu_top] = val;
+                                    break;
+                        }
+                        case 0xD8: case 0xD9: case 0xDA: case 0xDB: /*FSTPNCE st(i) - Undocumented Store & Pop without Underflow Check (0xD8 - 0xDF)*/
+                        case 0xDC: case 0xDD: case 0xDE: case 0xDF: {
+                            int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
+                            ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top];
+                            ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP from stack
+                            break;
+                        }
+
+                        default:
+                            printf("\n[CRITICAL FPU] Unimplemented or Invalid x87 Reg-to-Reg Opcode: 0xD9 0x%02X at CS:IP = %04X:%04X\n",
+                                   modrm, ctx->cs, ctx->ip - 2);
+                            fflush(stdout);
+
+                            // Call INT 6 (#UD) from 286.
+                            cpu286_trigger_protected_exception(ctx, 0x06, 0);
+                            return;
+
+
                     }
                 }
                 else { /* Memory Operations (MOD < 11b) */
@@ -886,7 +1089,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
             /* =========================================================================
-             * FPU ESCAPE GROUP 0xDB: 32-bits integers (FILD/FISTP), m80BCD and FSETPM
+             * FPU ESCAPE GROUP 0xDB: 32-bits Integers (FILD/FISTP), m80BCD and FSETPM
+             * STRICT 80287 IMPLEMENTATION
              * ========================================================================= */
             case 0xDB: {
 
@@ -901,48 +1105,31 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
-                // 1. Reg-to-Reg operations  (MOD == 11b)
+                // 1. Reg-to-Reg operations (MOD == 11b)
                 if (modrm >= 0xC0) {
-                    if (modrm == 0xE4) { // FSETPM (Opcode 0xDB 0xE4)
-                        // On Wine-OS/2 the virtual CPU 286 always run on protect Mode!
+                    if (modrm == 0xE4) { // FSETPM (Opcode 0xDB 0xE4) - 80287 Exclusive!
+                        // No-OP
                         break;
                     }
 
                     if (modrm == 0xE3) { // FNINIT (Opcode 0xDB 0xE3)
-                        // Initialize the FPU 287
                         ctx->fpu_top = 0;
-                        for (int i = 0; i < 8; i++) {
-                            ctx->fpu_stack[i] = 0.0L;
-                        }
-                        // Reset the Status and Control world to default
-                        ctx->env16.control_word = 0x037F; // Reset Pattern (active falgs)
-                        ctx->env16.status_word  = 0x0000; // Clear all error flags and exceptions
-                        ctx->env16.tag_word     = 0xFFFF; // 0xFFFF means ST(i) are cleaned
+                        for (int i = 0; i < 8; i++) ctx->fpu_stack[i] = 0.0L;
+                        ctx->env16.control_word = 0x037F;
+                        ctx->env16.status_word  = 0x0000;
+                        ctx->env16.tag_word     = 0xFFFF;
                         break;
                     }
 
-                    int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
-                    long double st0 = ctx->fpu_stack[ctx->fpu_top];
-                    long double target = ctx->fpu_stack[idx];
-
-                    switch (sub_op) {
-                        case 2: // FCOMI ST(0), ST(i) - Compare and execute Status Word
-                        case 3: // FCOMIP ST(0), ST(i) - Compare and execute POP
-                            fpu_update_status_compare(ctx, st0, target);
-                            if (sub_op == 3) {
-                                ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
-                            }
-                            break;
-
-                        default:
-                            printf("[FPU 287] Opcode 0xDB Reg-to-Reg Unknown: Sub-Op %d (ModR/M: 0x%02X)\n", sub_op, modrm);
-                            exit(139);
-                            break;
-                    }
-                    break;
+                    // PURE 80287 DEFENSE: Unnown opcodes
+                    printf("\n[CRITICAL FPU] Invalid x87 Reg Opcode (0xDB 0x%02X) at CS:IP = %04X:%04X\n",
+                           modrm, ctx->cs, ctx->ip - 2);
+                    fflush(stdout);
+                    cpu286_trigger_protected_exception(ctx, 0x06, 0); // #UD (Invalid Opcode)
+                    return;
                 }
 
-                // 2. memory Operations (modrm < 0xC0)
+                // 2. Memory Operations (MOD < 11b)
                 void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
                 if (!mem_ptr) {
                     printf("[CPU TRAP] GPF(0) on Opcode 0xDB: Memory failure\n");
@@ -954,41 +1141,50 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         int32_t i32_val;
                         memcpy(&i32_val, mem_ptr, 4);
                         ctx->fpu_top = (ctx->fpu_top - 1) & 7;
-                        ctx->fpu_stack[ctx->fpu_top] = (long double)i32_val; // MinGW 80-bits
+                        ctx->fpu_stack[ctx->fpu_top] = (long double)i32_val;
                         break;
                     }
 
-                    case 2:   // FIST m32int (Store Integer - 4 bytes)
-                    case 3: { // FISTP m32int (Store Integer and Pop - 4 bytes)
-                        int32_t i32_val = (int32_t)ctx->fpu_stack[ctx->fpu_top];
-                        memcpy(mem_ptr, &i32_val, 4);
-                        if (sub_op == 3) {
-                            ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
+                    case 2:   // FIST m32int (Store Long Integer)
+                    case 3: { // FISTP m32int (Store Long Integer and Pop)
+                        long double value = ctx->fpu_stack[ctx->fpu_top];
+                        long double round_value;
+
+                        // Apply Rounding Control of 287 to 32-bits integers
+                        uint16_t rc = (ctx->env16.control_word & 0x0C00) >> 10;
+                        switch (rc) {
+                            case 0: round_value = rintl(value);   break;
+                            case 1: round_value = floorl(value);  break;
+                            case 2: round_value = ceill(value);   break;
+                            case 3: round_value = truncl(value);  break;
                         }
+
+                        // Checking 32-bits integers limits (-2147483648 a 2147483647)
+                        int32_t i32_val;
+                        if (round_value < -2147483648.0L || round_value > 2147483647.0L || isnan(round_value)) {
+                            ctx->env16.status_word |= 0x0001; // #IE (Invalid Operation)
+                            i32_val = (int32_t)0x80000000;     // Undefined 32-bits integer from FPU
+                        } else {
+                            if (round_value != value) ctx->env16.status_word |= 0x0020; // #P (Precision)
+                            i32_val = (int32_t)round_value;
+                        }
+
+                        memcpy(mem_ptr, &i32_val, 4);
+                        if (sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
                         break;
                     }
 
-                    case 5: { // FLD m80bcd (Load BCD de 10 bytes - Stub)
-                        ctx->fpu_top = (ctx->fpu_top - 1) & 7;
-                        ctx->fpu_stack[ctx->fpu_top] = 0.0L;
-                        break;
-                    }
-
-                    case 7: { // FSTP m80bcd (Store BCD de 10 bytes e Pop)
-                        ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
-                        break;
-                    }
-
-                    default:
-                        printf("[FPU 287] Sub-Opcode from memory %d not supported on group 0xDB\n", sub_op);
-                        break;
+                            default:
+                                printf("[FPU 287] Sub-Opcode from memory %d not supported on group 0xDB\n", sub_op);
+                                break;
                 }
                 break;
             }
 
 
             /* =========================================================================
-             * FPU ESCAPE GROUP 0xDA: 32-bit Integers Arithmetic (Only Memory)
+             * FPU ESCAPE GROUP 0xDA: 32-bit Integers Arithmetic & Comparisons
+             * STRICT 80287 IMPLEMENTATION
              * ========================================================================= */
             case 0xDA: {
 
@@ -1000,24 +1196,51 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
-                if (modrm < 0xC0) {
-                    void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
-                    if (mem_ptr) {
-                        int32_t i32_val;
-                        memcpy(&i32_val, mem_ptr, 4); // 32-bit Integer Guest
-                        long double target = (long double)i32_val;
-                        switch (sub_op) {
-                            case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FIADD m32int
-                            case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FIMUL m32int
-                            case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FISUB m32int
-                            case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FISUBR m32int
-                            case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FIDIV m32int
-                            case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FIDIVR m32int
+                if (modrm >= 0xC0) { /* Reg-to-Reg operations (MOD == 11b) */
+                    // Invalid opcode trap
+                    printf("\n[CRITICAL FPU] Invalid/Pentium Pro x87 Reg Opcode (0xDA 0x%02X) on pure 80287 engine at CS:IP = %04X:%04X\n",
+                           modrm, ctx->cs, ctx->ip - 2);
+                    fflush(stdout);
+                    cpu286_trigger_protected_exception(ctx, 0x06, 0); // #UD (Invalid Opcode)
+                    return;
+                }
+
+                /* Memory Operations (MOD < 11b) - 32-bit Integers */
+                void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
+                if (!mem_ptr) {
+                    printf("[GPF] Failed memory decode in 0xDA\n");
+                    exit(139);
+                }
+
+                int32_t i32_val;
+                memcpy(&i32_val, mem_ptr, 4); // Safety copy to avoid host misalignements
+                long double target = (long double)i32_val;
+                long double st0 = ctx->fpu_stack[ctx->fpu_top];
+
+                switch (sub_op) {
+                    case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FIADD m32int
+                    case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FIMUL m32int
+
+                    case 2: // FICOM m32int (Compare ST(0) with long int)
+                    case 3: // FICOMP m32int (Compare ST(0) with long int and POP)
+                        fpu_update_status_compare(ctx, st0, target);
+                        if (sub_op == 3) {
+                            ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
                         }
-                    }
+                        break;
+
+                    case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FISUB m32int
+                    case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FISUBR m32int
+                    case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FIDIV m32int
+                    case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FIDIVR m32int
+
+                    default:
+                        printf("[FPU 287] Sub-Opcode from memory %d not supported on group 0xDA\n", sub_op);
+                        break;
                 }
                 break;
             }
+
 
 
             /* =========================================================================
@@ -1041,13 +1264,40 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     break;
                 }
 
-                if (modrm >= 0xC0) {
-                    // For integer operation
-                    printf("[FPU 287] Opcode 0xDF Reg-to-Reg (ModR/M: 0x%02X) not implemented\n", modrm);
-                    break;
+                if (modrm >= 0xC0) { /* Reg-to-Reg / FPU internal (MOD == 11b) */
+                    switch (modrm & 0xF8) {
+                        case 0xC0: { /* FFREEP ST(i) - Undocumented Free Register and POP (0xC0 - 0xC7) */
+                            int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
+
+                            // On real FPU, release the registerby setting the Tag Word as 11b (Empty)
+                            // Every register (0-7) occupy 2 bits on Tag Word: (idx * 2)
+                            ctx->env16.tag_word |= (3 << (idx * 2));
+
+                            // Unlike FFREEP: Always Execute the POP from stack
+                            ctx->fpu_top = (ctx->fpu_top + 1) & 7;
+                            break;
+                        }
+
+                        case 0xD8: { /* FSTP ST(i) - Alternate / Integer 64-bit Reg-to-Reg Store & Pop (0xD8 - 0xDF) */
+                            int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
+                            ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top];
+                            ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
+                            break;
+                        }
+
+                        default:
+                            printf("\n[CRITICAL FPU] Unimplemented or Invalid x87 Reg-to-Reg Opcode: 0xDF 0x%02X at CS:IP = %04X:%04X\n",
+                                   modrm, ctx->cs, ctx->ip - 2);
+                            fflush(stdout);
+
+                            // Fire the unimplemented opcode (#UD) INT 6
+                            cpu286_trigger_protected_exception(ctx, 0x06, 0);
+                            return;
+                    }
+                    break; // Exit 0xDF opcode
                 }
 
-                // 2. Operações com Memória (modrm < 0xC0) - Inteiros de 16-bits
+                // 2. Memory operations (modrm < 0xC0) - 16-bits integers & BCD
                 void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
                 if (!mem_ptr) {
                     printf("[GPF] Failed memory decode in 0xDF\n");
@@ -1056,32 +1306,126 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
                 uint8_t mem_sub_op = (modrm >> 3) & 0x07;
                 int16_t i16_val;
-                memcpy(&i16_val, mem_ptr, 2); // Safety copy to avoid host misalignment
 
                 switch (mem_sub_op) {
-                    case 0: // FILD m16int (Load Integer)
+                    case 0: // FILD m16int (Load Integer - 2 bytes)
+                        memcpy(&i16_val, mem_ptr, 2);
                         ctx->fpu_top = (ctx->fpu_top - 1) & 7;
-                        ctx->fpu_stack[ctx->fpu_top] = (long double)i16_val; // Sync with host types
+                        ctx->fpu_stack[ctx->fpu_top] = (long double)i16_val;
                         break;
 
-                    case 2: // FIST m16int (Store Integer)
-                    case 3: // FISTP m16int (Store Integer and Pop)
-                        i16_val = (int16_t)ctx->fpu_stack[ctx->fpu_top];
-                        memcpy(mem_ptr, &i16_val, 2);
+                    case 2: // FIST m16int (Store Integer - 2 bytes)
+                    case 3: // FISTP m16int (Store Integer and Pop - 2 bytes)
+                    {
+                        long double value = ctx->fpu_stack[ctx->fpu_top];
+                        long double round_value;
+
+                        // Set Rounding Control bits (bits 10 and 11) from Control Word
+                        uint16_t rc = (ctx->env16.control_word & 0x0C00) >> 10;
+
+                        switch (rc) {
+                            case 0: round_value = rintl(value);  break; // 00B: Round to nearest or even
+                            case 1: round_value = floorl(value); break; // 01B: Round Down (floor)
+                            case 2: round_value = ceill(value);  break; // 10B: Round Up (ceiling)
+                            case 3: round_value = truncl(value); break; // 11B: Chop / Truncate (near to zero)
+                        }
+
+                        // Hardware note: If the value exceeds (-32768 a 32767),
+                        // real FPU gets an invalid exception (#IE) and place "undefined" (0x8000).
+                        if (round_value < -32768.0L || round_value > 32767.0L || isnan(round_value)) {
+                            ctx->env16.status_word |= 0x0001; // Set flag IE (Invalid Operation)
+                            i16_val = (int16_t)0x8000;         // Undefined integer of FPU
+                        } else {
+                            if (round_value != value) {
+                                ctx->env16.status_word |= 0x0020; // Precision Exception (#P)
+                            }
+                            i16_val = (int16_t)round_value;
+                        }
+
+                        memcpy(mem_ptr, &i16_val, 2); // Safe memory write from host
+
                         if (mem_sub_op == 3) {
-                            ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
+                            ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP from stack
                         }
                         break;
+                    }
 
-                    default:
-                        printf("[FPU 287] Sub-Opcode on memory %d not supported on group 0xDF\n", mem_sub_op);
-                        break;
+                    case 5: { // FBLD m80bcd - Load Packed BCD (10 bytes)
+                                uint8_t* bcd_ptr = (uint8_t*)mem_ptr;
+                                long double result = 0.0L;
+                                long double power = 1.0L;
+
+                                // Rebuild the number from the first 9 bytes of packet decimal numbers
+                                for (int i = 0; i < 9; i++) {
+                                    uint8_t byte = bcd_ptr[i];
+                                    int digit_high = byte & 0x0F;
+                                    int digit_low = (byte >> 4) & 0x0F;
+
+                                    result += digit_low * power;
+                                    power *= 10.0L;
+                                    result += digit_high * power;
+                                    power *= 10.0L;
+                                }
+
+                                //  Bit 7 (MSB) of tenth byte (Index 9) set the singal on x87
+                                if (bcd_ptr[9] & 0x80) {
+                                    result = -result;
+                                }
+
+                                // PUSH to the top FPU stack
+                                ctx->fpu_top = (ctx->fpu_top - 1) & 7;
+                                ctx->fpu_stack[ctx->fpu_top] = result;
+                                break;
+                            }
+
+                    case 7: { // FBSTP m80bcd - Store Packed BCD and Pop (10 bytes)
+                                long double value = ctx->fpu_stack[ctx->fpu_top];
+                                uint8_t bcd_res[10] = {0};
+
+                                // Real FBSTP always round using rintl (round-to-nearest-even)
+                                long double round_value = rintl(value);
+
+                                // Set the signal e and get the absolute value to the digts extraction
+                                if (signbit(round_value)) {
+                                    bcd_res[9] |= 0x80; // Set the number signal using index 9
+                                    round_value = fabsl(round_value);
+                                }
+
+                                // Decompose the number with 18 packets digital numbers (2 for each 9 bytes)
+                                for (int i = 0; i < 9; i++) {
+                                    long double remainder_lower = fmodl(round_value, 10.0L);
+                                    round_value = truncl(round_value / 10.0L);
+                                    long double remainder_higher = fmodl(round_value, 10.0L);
+                                    round_value = truncl(round_value / 10.0L);
+
+                                    bcd_res[i] = ((uint8_t)remainder_higher << 4) | ((uint8_t)remainder_lower & 0x0F);
+                                }
+
+                                // If some value left after 18 digits, then had occoured BCD overflow
+                                if (round_value > 0.0L || isnan(value)) {
+                                    ctx->env16.status_word |= 0x0001; // #IE (Invalid Operation)
+                                    memset(bcd_res, 0xFF, 10);        // Undefined BCD on real FPU
+                                }
+
+                                // First 10 bytes safe writing on guest virtual memory
+                                memcpy(mem_ptr, bcd_res, 10);
+
+                                // Mandatory POP from stack
+                                ctx->fpu_top = (ctx->fpu_top + 1) & 7;
+                                break;
+                            }
+
+                            default:
+                                printf("[FPU 287] Sub-Opcode on memory %d not supported on group 0xDF\n", mem_sub_op);
+                                break;
                 }
                 break;
+
             }
 
             /* =========================================================================
-             * FPU ESCAPE GROUP 0xDE: 16-bits Arithmetic with implicit POP
+             * FPU ESCAPE GROUP 0xDE: 16-bits Arithmetic with implicit POP & Comparisons
+             * STRICT 80287 IMPLEMENTATION
              * ========================================================================= */
             case 0xDE: {
 
@@ -1093,33 +1437,70 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
-                if (modrm >= 0xC0) {
-                    // Reg-to-Reg operation with POP (Ex: FADDP ST(i), ST(0))
+                if (modrm >= 0xC0) { /* Reg-to-Reg operations with POP */
                     int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
+
+                    if (modrm == 0xD9) { /* FCOMPP - Compare ST(0) with ST(1) and POP TWICE */
+                        int idx_st1 = (ctx->fpu_top + 1) & 7;
+                        long double st0 = ctx->fpu_stack[ctx->fpu_top];
+                        long double st1 = ctx->fpu_stack[idx_st1];
+
+                        // Apply comparation routine
+                        fpu_update_status_compare(ctx, st0, st1);
+
+                        // Call two POP from stack
+                        ctx->fpu_top = (ctx->fpu_top + 2) & 7;
+                        break;
+                    }
+
                     switch (sub_op) {
                         case 0: ctx->fpu_stack[idx] += ctx->fpu_stack[ctx->fpu_top]; break; // FADDP
                         case 1: ctx->fpu_stack[idx] *= ctx->fpu_stack[ctx->fpu_top]; break; // FMULP
-                        case 4: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] - ctx->fpu_stack[idx]; break; // FSUBP
-                        case 5: ctx->fpu_stack[idx] -= ctx->fpu_stack[ctx->fpu_top]; break; // FSUBRP
-                        case 6: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] / ctx->fpu_stack[idx]; break; // FDIVP
-                        case 7: ctx->fpu_stack[idx] /= ctx->fpu_stack[ctx->fpu_top]; break; // FDIVRP
+
+                        // Arithmetic operands
+                        case 4: ctx->fpu_stack[idx] -= ctx->fpu_stack[ctx->fpu_top]; break; // FSUBP  -> ST(i) = ST(i) - ST(0)
+                        case 5: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] - ctx->fpu_stack[idx]; break; // FSUBRP -> ST(i) = ST(0) - ST(i)
+                        case 6: ctx->fpu_stack[idx] /= ctx->fpu_stack[ctx->fpu_top]; break; // FDIVP  -> ST(i) = ST(i) / ST(0)
+                        case 7: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] / ctx->fpu_stack[idx]; break; // FDIVRP -> ST(i) = ST(0) / ST(i)
+
+                        default:
+                            printf("\n[CRITICAL FPU] Invalid x87 Reg Opcode: 0xDE 0x%02X at CS:IP = %04X:%04X\n", modrm, ctx->cs, ctx->ip - 2);
+                            cpu286_trigger_protected_exception(ctx, 0x06, 0); // #UD
+                            return;
                     }
-                    ctx->fpu_top = (ctx->fpu_top + 1) & 7; // Execute the implicit POP
-                } else {
-                    // Memory operations (16-bit integers arithmetic)
+                    // Implict POP for all previous operands
+                    ctx->fpu_top = (ctx->fpu_top + 1) & 7;
+
+                } else { /* Memory operations (16-bit integers arithmetic & comparisons) */
                     void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
-                    if (mem_ptr) {
-                        int16_t i16_val;
-                        memcpy(&i16_val, mem_ptr, 2);
-                        long double target = (long double)i16_val;
-                        switch (sub_op) {
-                            case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FIADD
-                            case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FIMUL
-                            case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FISUB
-                            case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FISUBR
-                            case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FIDIV
-                            case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FIDIVR
-                        }
+                    if (!mem_ptr) {
+                        printf("[GPF] Failed memory decode in 0xDE\n");
+                        exit(139);
+                    }
+
+                    int16_t i16_val;
+                    memcpy(&i16_val, mem_ptr, 2);
+                    long double target = (long double)i16_val;
+                    long double st0 = ctx->fpu_stack[ctx->fpu_top];
+
+                    switch (sub_op) {
+                        case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FIADD
+                        case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FIMUL
+
+                        case 2: // FICOM m16int (Compare ST(0) with short)
+                        case 3: // FICOMP m16int (Compare ST(0) with short and POP)
+                            fpu_update_status_compare(ctx, st0, target);
+                            if (sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
+                            break;
+
+                        case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FISUB
+                        case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FISUBR
+                        case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FIDIV
+                        case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FIDIVR
+
+                        default:
+                            printf("[FPU 287] Sub-Opcode from memory %d not supported on group 0xDE\n", sub_op);
+                            break;
                     }
                 }
                 break;
@@ -1127,7 +1508,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
             /* =========================================================================
-             * FPU ESCAPE GROUP 0xDC: Double Precision Arithmetic (64-bit double)
+             * FPU ESCAPE GROUP 0xDC: Double Precision (64-bit) Arithmetic & Comparisons
+             * STRICT 80287 IMPLEMENTATION
              * ========================================================================= */
             case 0xDC: {
 
@@ -1139,38 +1521,59 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
                 uint8_t sub_op = (modrm >> 3) & 0x07;
 
-                if (modrm >= 0xC0) {
-                    // Reg-to-Reg Operations (where the destination is ST(i) instead ST(0))
+                if (modrm >= 0xC0) { /* Reg-to-Reg Operations (Destination is ST(i)) */
                     int idx = (ctx->fpu_top + (modrm & 0x07)) & 7;
-                    long double target = ctx->fpu_stack[idx];
+
                     switch (sub_op) {
                         case 0: ctx->fpu_stack[idx] += ctx->fpu_stack[ctx->fpu_top]; break; // FADD ST(i), ST(0)
                         case 1: ctx->fpu_stack[idx] *= ctx->fpu_stack[ctx->fpu_top]; break; // FMUL ST(i), ST(0)
-                        case 4: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] - ctx->fpu_stack[idx]; break; // FSUB
-                        case 5: ctx->fpu_stack[idx] -= ctx->fpu_stack[ctx->fpu_top]; break; // FSUBR
-                        case 6: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] / ctx->fpu_stack[idx]; break; // FDIV
-                        case 7: ctx->fpu_stack[idx] /= ctx->fpu_stack[ctx->fpu_top]; break; // FDIVR
-                    }
-                } else {
-                    // 64-bits memory oeprations (double) - Like 0xD8!
-                    void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
-                    if (mem_ptr) {
-                        double f64_val;
-                        memcpy(&f64_val, mem_ptr, 8); // Extract 8 bytes (Double from Guest)
-                        long double target = (long double)f64_val;
 
-                        switch (sub_op) {
-                            case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FADD
-                            case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FMUL
-                            case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FSUB
-                            case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FSUBR
-                            case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FDIV
-                            case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FDIVR
-                        }
+                        // FIX: Operators order fixed
+                        case 4: ctx->fpu_stack[idx] -= ctx->fpu_stack[ctx->fpu_top]; break; // FSUB ST(i), ST(0)  -> ST(i) = ST(i) - ST(0)
+                        case 5: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] - ctx->fpu_stack[idx]; break; // FSUBR ST(i), ST(0) -> ST(i) = ST(0) - ST(i)
+                        case 6: ctx->fpu_stack[idx] /= ctx->fpu_stack[ctx->fpu_top]; break; // FDIV ST(i), ST(0)  -> ST(i) = ST(i) / ST(0)
+                        case 7: ctx->fpu_stack[idx] = ctx->fpu_stack[ctx->fpu_top] / ctx->fpu_stack[idx]; break; // FDIVR ST(i), ST(0) -> ST(i) = ST(0) / ST(i)
+
+                        default:
+                            cpu286_trigger_protected_exception(ctx, 0x06, 0); // #UD de segurança
+                            return;
+                    }
+                } else { /* Memory Operations (64-bit double) */
+                    void* mem_ptr = cpu286_decode_modrm(ctx, modrm, &args_ptr);
+
+                    if (!mem_ptr) {
+                        printf("[CPU TRAP] GPF(0) on Opcode 0xDC: Memory failure\n");
+                        exit(139);
+                    }
+
+                    double f64_val;
+                    memcpy(&f64_val, mem_ptr, 8); // Safe extraction to avoid host misalignment
+                    long double target = (long double)f64_val;
+                    long double st0 = ctx->fpu_stack[ctx->fpu_top];
+
+                    switch (sub_op) {
+                        case 0: ctx->fpu_stack[ctx->fpu_top] += target; break; // FADD m64fp
+                        case 1: ctx->fpu_stack[ctx->fpu_top] *= target; break; // FMUL m64fp
+
+                        // ADDED: Missing comparation opcodes
+                        case 2: // FCOM m64fp
+                        case 3: // FCOMP m64fp
+                            fpu_update_status_compare(ctx, st0, target);
+                            if (sub_op == 3) ctx->fpu_top = (ctx->fpu_top + 1) & 7; // POP
+                            break;
+
+                        case 4: ctx->fpu_stack[ctx->fpu_top] -= target; break; // FSUB m64fp
+                        case 5: ctx->fpu_stack[ctx->fpu_top] = target - ctx->fpu_stack[ctx->fpu_top]; break; // FSUBR m64fp
+                        case 6: ctx->fpu_stack[ctx->fpu_top] /= target; break; // FDIV m64fp
+                        case 7: ctx->fpu_stack[ctx->fpu_top] = target / ctx->fpu_stack[ctx->fpu_top]; break; // FIDIVR m64fp
+
+                        default:
+                            break;
                     }
                 }
                 break;
             }
+
 
 
 
