@@ -455,12 +455,14 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
     uint8_t* code_stream;
     uint8_t opcode;
-    ctx->rep_prefix = 0;
+    ctx->rep_prefix = 0; /* Initial prefix override is zero*/
     ctx->seg_override = 0;
 
     uint16_t instruction_start_ip = ctx->ip;
 
-    while(1) { //prefix loop
+    uint8_t processing_prefixes = 0;
+
+    while(processing_prefixes == 0) {
     /* Get the real host pointer from current cycle IP */
     code_stream = (uint8_t*)mode16to32(ctx->cs, ctx->ip);
     if (!code_stream) {
@@ -470,27 +472,66 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
     opcode = *code_stream;
 
-    /* Resolve repetition prefixes */
-    if (opcode == 0xF3 || opcode == 0xF2) {
-        ctx->rep_prefix = opcode;
-        ctx->ip++;
-        continue;
+    switch(opcode) {
+         /* =========================================================================
+          * REPETITION PREFIX (SEG)
+          * ========================================================================= */
+
+         case 0xF2:
+         case 0xF3:
+             ctx->rep_prefix = opcode;
+             ctx->ip++;
+             break;
+
+         /* =========================================================================
+          * REPETITION SEGMENTS (SEG)
+          * ========================================================================= */
+
+         case 0x26: // ES
+             ctx->seg_override = ctx->es;
+             ctx->ip++;
+             break;
+         case 0x36: // SS
+             ctx->seg_override = ctx->ss;
+             ctx->ip++;
+             break;
+         case 0x2E: // CS
+             ctx->seg_override = ctx->cs;
+             ctx->ip++;
+             break;
+         case 0x3E: // DS
+             ctx->seg_override = ctx->ds;
+             ctx->ip++;
+             break;
+
+             /* =========================================================================
+              * BUS LOCK PREFIX (Opcode 0xF0) - MULTITHREAD COMPLIANCE
+              * ========================================================================= */
+             case 0xF0: {
+                 /* Within Ring 3 Protected Mode CPL is always 3.
+                  * O IOPL lives on bits 12 and 13 from FLAGS. */
+                 uint8_t iopl = (ctx->flags >> 12) & 0x03;
+
+                 if (3 > iopl) {
+                     /* On 286 real, if CPL > IOPL in Protected Mode, fires #GP(0) */
+                     printf("[CPU TRAP] #GP(0): LOCK prefix violation at CS:IP = %04X:%04X (CPL3 > IOPL%d)\n",
+                            ctx->cs, ctx->ip - 1, iopl);
+                     exit(139); // Emulator closes safely
+                 }
+
+                 /* If passes the privilege flag, active it and executes
+                  * the next instruction comes next */
+                 ctx->lock_prefix = 1;
+                 ctx->ip++;
+                 break;
+             }
+             default:
+                 processing_prefixes = 1;
+                 break;
+
+     }
+
     }
-
-    /* Resolve override repetitions segments  */
-    switch(opcode)
-    {
-      case 0x26: ctx->seg_override = ctx->es; ctx->ip++; continue; 
-      case 0x36:ctx->seg_override = ctx->ss; ctx->ip++; continue; 
-      case 0x2E: ctx->seg_override = ctx->cs; ctx->ip++; continue; 
-      case 0x3E: ctx->seg_override = ctx->ds; ctx->ip++; continue; 
-      default: break;
-    }
-
-    break;
-
-    }
-
     /* Advance to the opcode pointer. */
     ctx->ip++;
     uint8_t* args_ptr = code_stream + 1;
@@ -622,7 +663,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
              * ========================================================================= */
             case 0xD8: {
                 if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
                 uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
@@ -691,7 +732,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             case 0xDD: {
 
                 if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
 
@@ -791,7 +832,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
                 /* 2. Signal opcodes will validate pending interrupts */
                 if (!is_no_wait && ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F))) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
 
@@ -1104,10 +1145,10 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             case 0xDB: {
 
                 uint8_t peak_modrm = *(code_stream + 1);
-                int is_no_wait = (peak_modrm == 0xE3 || peak_modrm == 0xE4); // FNINIT ou FSETPM
+                int is_no_wait = (peak_modrm == 0xE3 || peak_modrm == 0xE4); // FNINIT or FSETPM
 
                 if (!is_no_wait && ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F))) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
 
@@ -1198,7 +1239,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             case 0xDA: {
 
                 if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
 
@@ -1261,7 +1302,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 int is_no_wait = (peak_modrm == 0xE0); // FNSTSW AX
 
                 if (!is_no_wait && ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F))) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
 
@@ -1439,7 +1480,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             case 0xDE: {
 
                 if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
 
@@ -1523,7 +1564,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             case 0xDC: {
 
                 if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
-                    cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                    cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip );
                     return;
                 }
 
@@ -1581,32 +1622,6 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     }
                 }
                 break;
-            }
-
-
-
-
-
-            /* =========================================================================
-             * BUS LOCK PREFIX (Opcode 0xF0) - MULTITHREAD COMPLIANCE
-             * ========================================================================= */
-            case 0xF0: {
-                /* Within Ring 3 Protected Mode CPL is always 3.
-                 * O IOPL lives on bits 12 and 13 from FLAGS. */
-                uint8_t iopl = (ctx->flags >> 12) & 0x03;
-
-                if (3 > iopl) {
-                    /* On 286 real, if CPL > IOPL in Protected Mode, fires #GP(0) */
-                    printf("[CPU TRAP] #GP(0): LOCK prefix violation at CS:IP = %04X:%04X (CPL3 > IOPL%d)\n",
-                           ctx->cs, ctx->ip - 1, iopl);
-                    exit(139); // Emulator closes safely
-                }
-
-                /* If passes the privilege flag, active it and executes
-                 * the next instruction comes next */
-                ctx->lock_prefix = 1;
-                ctx->ip++;
-                continue;
             }
 
 
@@ -1764,110 +1779,105 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
 
+                /* =========================================================================
+                 * CALL far ptr16:16 - FIXED FOR C, PASCAL, FORTRAN RUNTIMES
+                 * ========================================================================= */
+                case 0x9A: {
+                    uint16_t target_offset = 0;
+                    uint16_t target_selector = 0;
 
-        case 0x9A: { /* CALL far ptr16:16 - FULLY FIXED FOR 16-BIT ENGINES */
-            uint16_t target_offset = 0;
-            uint16_t target_selector = 0;
+                    /* Intel x86 Standard Layout: Stream fils [Offset16] [Selector16] */
+                    memcpy(&target_offset, args_ptr + 2, 2);
+                    memcpy(&target_selector, args_ptr + 0, 2);
 
-            uint8_t* raw_ram_ptr = (uint8_t*)mode16to32(ctx->cs, ctx->ip);
+                    /* Sync pointers */
+                    args_ptr += 4;
+                    ctx->ip += 4; // ctx->ip now points to the next function after CALL
 
-            printf("\n[CPU DEBUG 9A] Executing Call Far at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip);
-            if (raw_ram_ptr) {
-                printf("  -> Raw Bytes in RAM at pointer %p: %02X %02X %02X %02X %02X\n",
-                       (void*)raw_ram_ptr, raw_ram_ptr[-1], raw_ram_ptr[0], raw_ram_ptr[1], raw_ram_ptr[2], raw_ram_ptr[3]);
-            } else {
-                printf("  -> [CRITICAL] mode16to32 returned NULL for CS:IP!\n");
-            }
-            fflush(stdout);
-            /* ========================================================================= */
+                    /* =========================================================================
+                     * DYNAMIC RELOCATION (DOSCALLS)
+                     * ========================================================================= */
+                    if (target_selector == 0x00FF || target_selector == 0xFFFF || target_selector == 0x0000) {
+                        uint16_t mock_ordinal = target_offset;
+                        uint16_t resolved_gate = wineos2_get_callgate_selector("DOSCALLS", mock_ordinal);
+                        if (resolved_gate != 0) {
+                            target_selector = resolved_gate;
+                        } else if (target_selector == 0x0000) {
+                            printf("\n[CRITICAL GPF] Fatal dynamic API resolution collapse at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 5);
+                            exit(139);
+                        }
+                    }
 
-            /* FIXED: Safe memcpy use to avoid garbage alignment on certain hosts. Also due to static linkage the offset and and selector are swapped */
-            memcpy(&target_offset, args_ptr + 2, 2);
-            memcpy(&target_selector, args_ptr + 0, 2);
+                    uint16_t ldt_index = target_selector >> 3;
 
-            /* Sync and consume the remaining 4-bytes from the host stream */
-            args_ptr += 4;
-            ctx->ip += 4; // ctx->ip now points to the next CALL
-
-            /* =========================================================================
-             * DYNAMIC RELOCATION INTERCEPT (FIX FOR SELECTOR 0x00FF / 0xFFFF / 0x0000)
-             * ========================================================================= */
-            if (target_selector == 0x00FF || target_selector == 0xFFFF || target_selector == 0x0000) {
-                uint16_t mock_ordinal = target_offset;
-                uint16_t resolved_gate = wineos2_get_callgate_selector("DOSCALLS", mock_ordinal);
-
-                if (resolved_gate != 0) {
-                    target_selector = resolved_gate;
-                } else {
-                    if (target_selector == 0x0000) {
-                        printf("[Loader Reloc] Intercepted unpatched far call with selector 0x%04X! Presumed Ordinal: %u\n",
-                               target_selector, mock_ordinal);
-                        printf("\n[CRITICAL GPF] Fatal dynamic API resolution collapse at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 5);
+                    if (ldt_index >= LDT_MAX_ENTRIES || !virtual_ldt[ldt_index].present) {
+                        printf("\n[CRITICAL GPF] Invalid Far Call Selector 0x%04X at CS:IP = %04X:%04X\n",
+                               target_selector, ctx->cs, ctx->ip - 5);
                         exit(139);
                     }
-                }
-            }
 
-            uint16_t ldt_index = target_selector >> 3;
+                    /* =========================================================================
+                     * CALL GATE INTERCEPTION (NATIVE OS/2 API)
+                     * ========================================================================= */
+                    if (virtual_ldt[ldt_index].type == LDT_TYPE_CALLGATE) {
+                        printf("[API TRACE] Far Call intercepted to CallGate Selector: 0x%04X | %s Ordinal: %u\n",
+                               target_selector, virtual_ldt[ldt_index].mod_name, virtual_ldt[ldt_index].limit);
+                        fflush(stdout);
+                        if (virtual_ldt[ldt_index].wine_thunk) {
 
-            if (ldt_index >= LDT_MAX_ENTRIES || !virtual_ldt[ldt_index].present) {
-                printf("\n[CRITICAL GPF] Invalid Far Call Selector 0x%04X at CS:IP = %04X:%04X\n",
-                       target_selector, ctx->cs, ctx->ip - 5);
-                exit(139);
-            }
+                            /* 1. Preserve the absolute return value from OS/2 */
+                            uint16_t return_cs = ctx->cs;
+                            uint16_t return_ip = ctx->ip;
 
-            /* =========================================================================
-             * CALL GATE INTERCEPT ROUTINE (AUTOMATED STACK BALANCING)
-             * ========================================================================= */
-            if (virtual_ldt[ldt_index].type == LDT_TYPE_CALLGATE) {
-                printf("[API TRACE] Far Call intercepted to CallGate Selector: 0x%04X | %s Ordinal: %u\n",
-                       target_selector, virtual_ldt[ldt_index].mod_name, virtual_ldt[ldt_index].limit);
-                fflush(stdout);
+                            /* 2. Simulate the 286 Stack for the CallGate */
+                            cpu286_push16(ctx, return_cs);
+                            cpu286_push16(ctx, return_ip);
 
-                if (virtual_ldt[ldt_index].wine_thunk) {
-                    /* 1. Preserve the return adress of OS/2 guest */
-                    uint16_t return_cs = ctx->cs;
-                    uint16_t return_ip = ctx->ip;
+                            /* 3. Call native C Thunk from Wine-OS/2 */
+                            uint16_t api_result = virtual_ldt[ldt_index].wine_thunk(ctx);
+                            ctx->ax = api_result;
 
-                    /* 2. Simulate the real stack frame before the thunk */
-                    cpu286_push16(ctx, return_cs);
-                    cpu286_push16(ctx, return_ip);
+                            /* Update Carry Flag based on return (OS/2 Error Pattern) */
+                            if (api_result == 0) {
+                                ctx->flags &= ~CF_MASK; /* Sucess: clean Carry */
+                            } else {
+                                ctx->flags |= CF_MASK;  /* Error: active Carry */
+                            }
 
-                    /* 3. Call the C function of Wine */
-                    uint16_t api_result = virtual_ldt[ldt_index].wine_thunk(ctx);
-                    ctx->ax = api_result;
+                            /* 4. Restore flux to next instruction */
+                            ctx->ip = return_ip;
+                            ctx->cs = return_cs;
 
-                    /* Missing Carry flag*/
-                    if (api_result == 0) {
-                        ctx->flags &= ~CF_MASK; /* Clear Carry Flaf (Real Success) */
-                    } else {
-                        ctx->flags |= CF_MASK;  /* Active Carry Flag (Required for C runtimes) */
+                            /* 5. Inteligent stack balance:
+                             * Only clean the parameters from assembly calls.
+                             * SIf C runtime intercept and "add sp", avoid double adjustment. */
+                            ctx->sp += 4; /* Pass CS:IP simulated from stack */
+
+                            /* IF param_bytes is active (Pascal), advance the necessary bytes */
+                            ctx->sp += virtual_ldt[ldt_index].param_bytes;
+
+                        } else {
+                            printf("[API TRACE WARNING] Unimplemented OS/2 CallGate: Selector 0x%04X\n", target_selector);
+                            ctx->ax = 182; /* ERROR_INVALID_STARTING_CODESEG */
+                            ctx->flags |= CF_MASK;
+                        }
                     }
+                    /* =========================================================================
+                     * NORMAL INTER_SEGMENT JUMP (C COMPILERS)
+                     * ========================================================================= */
+                    else {
+                        /* Real Hardware: Fill on stack the current CS and next IP*/
+                        cpu286_push16(ctx, ctx->cs);
+                        cpu286_push16(ctx, ctx->ip);
 
-                    /* 4. pascal return:
-                     * All parameters are above the frame(ctx->sp + 4).
-                     * After C function return, it is needed to undo the push and the pascal parameters.
-                     */
-                    ctx->ip = return_ip; // Return the flags to the next instruction
-                    ctx->cs = return_cs;
-
-                    // Clean the CS:IP of stack (+4) and advanced the request number of bytes by the API
-                    ctx->sp += 4 + virtual_ldt[ldt_index].param_bytes;
-                } else {
-                    printf("[API TRACE WARNING] Unimplemented OS/2 CallGate: Selector 0x%04X (Ordinal %u)\n",
-                           target_selector, virtual_ldt[ldt_index].limit);
-                    ctx->ax = 182; /* ERROR_INVALID_STARTING_CODESEG */
+                        /* Make a direct jump to next segment and offset */
+                        ctx->cs = target_selector;
+                        ctx->ip = target_offset;
+                    }
+                    break;
                 }
-            }
-            /* NORMAL PROTECTED MODE INTER-SEGMENT PROCEEDING */
-            else {
-                cpu286_push16(ctx, ctx->cs);
-                cpu286_push16(ctx, ctx->ip);
-                ctx->cs = target_selector;
-                ctx->ip = target_offset;
-            }
-            break;
-        }
+
+
 
         /* =========================================================================
          * INTEL 286 SYNC OF 287 - FWAIT
@@ -1875,7 +1885,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x9B: { // FWAIT / WAIT
             if ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F)) {
                 // Call #MF (INT 10h), this instruction had 1 byte
-                cpu286_trigger_protected_exception(ctx, 0x10, 1);
+                cpu286_trigger_protected_exception(ctx, 0x10, instruction_start_ip);
                 return;
             }
             break;
@@ -1926,65 +1936,78 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                  }
                  break;
              }
-             /* =========================================================================
-              * 16-BIT CONDITIONAL LONG JUMPS (Opcodes 0x0F 0x80 to 0x0F 0x8F)
-              * ========================================================================= */
-             case 0x80:   /* JO rel16 (Jump Near if Overflow) */
-             case 0x81:   /* JNO rel16 (Jump Near if Not Overflow) */
-             case 0x82:   /* JB/JC rel16 (Jump Near if Below/Carry) */
-             case 0x83:   /* JAE/JNC rel16 (Jump Near if Above or Equal/No Carry) */
-             case 0x84:   /* JE/JZ rel16 (Jump Near if Equal/Zero) */
-             case 0x85:   /* JNE/JNZ rel16 (Jump Near if Not Equal/Not Zero) */
-             case 0x86:   /* JBE/JNA rel16 (Jump Near if Below or Equal/Not Above) */
-             case 0x87:   /* JA/JNBE rel16 (Jump Near if Above/Not Below or Equal) */
-             case 0x88:   /* JS rel16 (Jump Near if Sign) */
-             case 0x89:   /* JNS rel16 (Jump Near if Not Sign) */
-             case 0x8A:   /* JP/JPE rel16 (Jump Near if Parity/Parity Equal) */
-             case 0x8B:   /* JNP/JPO rel16 (Jump Near if Not Parity/Parity Odd) */
-             case 0x8C:   /* JL/JNGE rel16 (Jump Near if Less/Not Greater or Equal) */
-             case 0x8D:   /* JGE/JNL rel16 (Jump Near if Greater or Equal/Not Less) */
-             case 0x8E:   /* JLE/JNG rel16 (Jump Near if Less or Equal/Not Greater) */
-             case 0x8F: { /* JG/JNLE rel16 (Jump Near if Greater/Not Less or Equal) */
-                 int16_t rel16;
-                 /* Use memcpy to protect against potential unaligned host pointer reading faults */
-                 memcpy(&rel16, args_ptr, 2);
-                 ctx->ip += 2; /* Advance past the 2 displacement bytes immediately */
-                 args_ptr += 2;
 
-                 int condition_met = 0;
-                 uint8_t condition = extended_opcode & 0x0F;
 
-                 switch (condition) {
-                     case 0x0: condition_met = ((ctx->flags & OF_MASK) != 0); break;
-                     case 0x1: condition_met = ((ctx->flags & OF_MASK) == 0); break;
-                     case 0x2: condition_met = IS_CF_SET(ctx); break;
-                     case 0x3: condition_met = !IS_CF_SET(ctx); break;
-                     case 0x4: condition_met = IS_ZF_SET(ctx); break;
-                     case 0x5: condition_met = !IS_ZF_SET(ctx); break;
-                     case 0x6: condition_met = (IS_CF_SET(ctx) || IS_ZF_SET(ctx)); break;
-                     case 0x7: condition_met = (!IS_CF_SET(ctx) && !IS_ZF_SET(ctx)); break;
-                     case 0x8: condition_met = IS_SF_SET(ctx); break;
-                     case 0x9: condition_met = !IS_SF_SET(ctx); break;
-                     case 0xC: condition_met = (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0)); break;
-                     case 0xD: condition_met = (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0)); break;
-                     case 0xE: condition_met = (IS_ZF_SET(ctx) || (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0))); break;
-                     case 0xF: condition_met = (!IS_ZF_SET(ctx) && (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0))); break;
-                     default:  condition_met = 0; break; /* Opcodes 0x8A and 0x8B (Parity) ignored for standard OS/2 Ring3 apps */
-                 }
 
-                 if (condition_met) {
-                     /* Apply 16-bit unsigned hardware wrapping mask to target instruction pointer */
-                     ctx->ip = (uint16_t)((ctx->ip + rel16) & 0xFFFF);
-                 }
-                 break;
-             }
+        /* =========================================================================
+         * 16-BIT CONDITIONAL LONG JUMPS (Opcodes 0x0F 0x80 to 0x0F 0x8F) - FIXED
+         * ========================================================================= */
+        case 0x80:   /* JO rel16 (Jump Near if Overflow) */
+        case 0x81:   /* JNO rel16 (Jump Near if Not Overflow) */
+        case 0x82:   /* JB/JC rel16 (Jump Near if Below/Carry) */
+        case 0x83:   /* JAE/JNC rel16 (Jump Near if Above or Equal/No Carry) */
+        case 0x84:   /* JE/JZ rel16 (Jump Near if Equal/Zero) */
+        case 0x85:   /* JNE/JNZ rel16 (Jump Near if Not Equal/Not Zero) */
+        case 0x86:   /* JBE/JNA rel16 (Jump Near if Below or Equal/Not Above) */
+        case 0x87:   /* JA/JNBE rel16 (Jump Near if Above/Not Below or Equal) */
+        case 0x88:   /* JS rel16 (Jump Near if Sign) */
+        case 0x89:   /* JNS rel16 (Jump Near if Not Sign) */
+        case 0x8A:   /* JP/JPE rel16 (Jump Near if Parity/Parity Equal) */
+        case 0x8B:   /* JNP/JPO rel16 (Jump Near if Not Parity/Parity Odd) */
+        case 0x8C:   /* JL/JNGE rel16 (Jump Near if Less/Not Greater or Equal) */
+        case 0x8D:   /* JGE/JNL rel16 (Jump Near if Greater or Equal/Not Less) */
+        case 0x8E:   /* JLE/JNG rel16 (Jump Near if Less or Equal/Not Greater) */
+        case 0x8F: { /* JG/JNLE rel16 (Jump Near if Greater/Not Less or Equal) */
+            int16_t rel16 = 0;
 
-             default:
-                 printf("Unsupported 2-Byte Extended Opcode: 0x0F 0x%02X at IP: 0x%04X\n", extended_opcode, ctx->ip - 2);
-                 break;
+            /* Get safely the argument pointer without avoiding hst misallignment */
+            memcpy(&rel16, args_ptr, 2);
+
+            /* Advance IP and argument stacks */
+            ctx->ip += 2;
+            args_ptr += 2;
+
+            int condition_met = 0;
+            uint8_t condition = extended_opcode & 0x0F;
+
+            switch (condition) {
+                case 0x0: condition_met = ((ctx->flags & OF_MASK) != 0); break; // JO
+                case 0x1: condition_met = ((ctx->flags & OF_MASK) == 0); break; // JNO
+                case 0x2: condition_met = IS_CF_SET(ctx); break;               // JB/JC
+                case 0x3: condition_met = !IS_CF_SET(ctx); break;              // JAE/JNC
+                case 0x4: condition_met = IS_ZF_SET(ctx); break;               // JE/JZ
+                case 0x5: condition_met = !IS_ZF_SET(ctx); break;              // JNE/JNZ
+                case 0x6: condition_met = (IS_CF_SET(ctx) || IS_ZF_SET(ctx)); break; // JBE/JNA
+                case 0x7: condition_met = (!IS_CF_SET(ctx) && !IS_ZF_SET(ctx)); break; // JA/JNBE
+                case 0x8: condition_met = IS_SF_SET(ctx); break;               // JS
+                case 0x9: condition_met = !IS_SF_SET(ctx); break;              // JNS
+
+                /* FIX: Atomic suport for parity bits (PF_MASK assignment on bit 2 if necessary,
+                 * or mapped via bit according to x86: 0x0004) */
+                case 0xA: condition_met = ((ctx->flags & 0x0004) != 0); break; // JP/JPE
+                case 0xB: condition_met = ((ctx->flags & 0x0004) == 0); break; // JNP/JPO
+
+                case 0xC: condition_met = (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0)); break; // JL/JNGE
+                case 0xD: condition_met = (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0)); break; // JGE/JNL
+                case 0xE: condition_met = (IS_ZF_SET(ctx) || (IS_SF_SET(ctx) != ((ctx->flags & OF_MASK) != 0))); break; // JLE/JNG
+                case 0xF: condition_met = (!IS_ZF_SET(ctx) && (IS_SF_SET(ctx) == ((ctx->flags & OF_MASK) != 0))); break; // JG/JNLE
+                default:  condition_met = 0; break;
+            }
+
+            if (condition_met) {
+                /* Applying arithmic computation */
+                ctx->ip = (uint16_t)((ctx->ip + rel16) & 0xFFFF);
+            }
+            break;
+
+        }
+                default:
+                    printf("Unsupported 2-Byte Extended Opcode: 0x0F 0x%02X at IP: 0x%04X\n", extended_opcode, ctx->ip - 2);
+                    break;
          }
-         break;
+        break; //Global 0x0F ending
      }
+
 
 
 
@@ -2492,26 +2515,24 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
          * ========================================================================= */
         case 0xA6:   /* CMPSB - Compare String Byte (DS:SI vs ES:DI) */
         case 0xA7: { /* CMPSW - Compare String Word (DS:SI vs ES:DI) */
-            if ((prefix == 0xF3 || prefix == 0xF2) && ctx->cx == 0) {
+            uint8_t prefix = ctx->rep_prefix; // Pull the stored prefix
+            uint16_t element_size = (opcode == 0xA6) ? 1 : 2; //Set the element size
+            if ((prefix == 0xF3 || prefix == 0xF2) && ctx->cx == 0) { //If CX is zero, do nothing
                 break;
             }
 
-            uint32_t count = (prefix == 0xF3 || prefix == 0xF2) ? ctx->cx : 1;
-            uint16_t element_size = (opcode == 0xA6) ? 1 : 2;
-            uint32_t iterations_executed = 0;
+            /* Execute a single time without a prefix, or the number of times specified on CX */
+            while (1) {
+                if (ctx->ds == 0 || ctx->es == 0) {
+                    printf("\n[CRITICAL GPF] String comparison via Null Segment Selector!\n");
+                    exit(139);
+                }
 
-            if (ctx->ds == 0 || ctx->es == 0) {
-                printf("\n[CRITICAL GPF] String comparison attempted through a Null Segment Selector! DS=%04X, ES=%04X\n", ctx->ds, ctx->es);
-                exit(139);
-            }
-
-            for (uint32_t i = 0; i < count; i++) {
                 void* src_flat_ptr  = mode16to32(ctx->ds, ctx->si);
-                void* dest_flat_ptr = mode16to32(ctx->es, ctx->di);
+                void* dest_flat_ptr = mode16to32(ctx->seg_override ? ctx->seg_override : ctx->es, ctx->di);
 
                 if (!src_flat_ptr || !dest_flat_ptr) {
-                    printf("\n[CRITICAL GPF] String comparison boundary violation at DS:SI=%04X:%04X, ES:DI=%04X:%04X\n",
-                           ctx->ds, ctx->si, ctx->es, ctx->di);
+                    printf("\n[CRITICAL GPF] String comparison boundary violation!\n");
                     exit(139);
                 }
 
@@ -2528,6 +2549,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     dest_val &= 0xFFFF;
                 }
 
+                /* x86 subtract Dest of Src to update the falgs on CMPS (Src - Dest) */
                 uint32_t comparison_res = src_val - dest_val;
 
                 if (element_size == 1) {
@@ -2538,24 +2560,34 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     if (src_val < dest_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
                 }
 
-                iterations_executed++;
-
+                /* Update index pointers */
                 if (IS_DF_SET(ctx)) {
                     ctx->si -= element_size; ctx->di -= element_size;
                 } else {
                     ctx->si += element_size; ctx->di += element_size;
                 }
 
-                if (prefix == 0xF3) { /* REPE / REPZ */
-                    if (!IS_ZF_SET(ctx)) break;
+                /* If no REP prefix exists, execute a single instruction */
+                if (prefix != 0xF3 && prefix != 0xF2) {
+                    break;
                 }
-                else if (prefix == 0xF2) { /* REPNE / REPNZ */
-                    if (IS_ZF_SET(ctx)) break;
-                }
-            }
 
-            if (prefix == 0xF3 || prefix == 0xF2) {
-                ctx->cx -= (uint16_t)iterations_executed;
+                /* Decrement CX after local execution */
+                ctx->cx--;
+
+                /* Check stop condition with updated (ZF) flag */
+                if (ctx->cx == 0) {
+                    break;
+                }
+
+                if (prefix == 0xF3 && !IS_ZF_SET(ctx)) {
+                    /* REPE/REPZ if the strings are different (ZF == 0) */
+                    break;
+                }
+                if (prefix == 0xF2 && IS_ZF_SET(ctx)) {
+                    /* REPNE/REPNZ if the strings are equal (ZF == 1) */
+                    break;
+                }
             }
             break;
         }
@@ -3499,18 +3531,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     }
 
                     /* =========================================================================
-                     * OPCODE 0x10: ADC r/m8, r8 (Add with Carry 8-bit, Reg to r/m)
+                     * OPCODE 0x10: ADC r/m8, r8 (Add with Carry 8-bit, Reg to r/m) - FIXED
                      * ========================================================================= */
                     case 0x10: {
                         uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
-
-                        /* Identify original register type (bits 3,4,5 do ModR/M) */
                         uint8_t* src_reg = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-
-                        /* Identify target r/m8 */
-                        uint8_t* dest_ptr = (((modrm >> 6) & 0x03) == 3)
-                        ? cpu286_get_reg8(ctx, modrm & 0x07)
-                        : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+                        uint8_t* dest_ptr = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
 
                         if (!src_reg || !dest_ptr) {
                             printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x10 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
@@ -3519,80 +3545,75 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
                         uint8_t src_val = *src_reg;
                         uint8_t dest_val = *dest_ptr;
-                        uint16_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
+                        uint8_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
 
-                        uint16_t temp_res = (uint16_t)dest_val + (uint16_t)src_val + carry;
+                        uint32_t temp_res = (uint32_t)dest_val + (uint32_t)src_val + carry;
                         uint8_t final_res = (uint8_t)(temp_res & 0xFF);
 
-                        /* Update target (Regiter or Memory) */
                         *dest_ptr = final_res;
 
-                        /* Update 286 flags */
+                        /* Updating flags */
                         ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
                         if (temp_res > 0xFF) ctx->flags |= CF_MASK;
                         if (final_res == 0) ctx->flags |= ZF_MASK;
                         if (final_res & 0x80) ctx->flags |= SF_MASK;
-                        if (!((dest_val ^ src_val) & 0x80) && ((dest_val ^ final_res) & 0x80)) ctx->flags |= OF_MASK;
 
+                        /* OF = Active if (Dest_Sign == Src_Sign) AND (Dest_Sign != Final_Sign) */
+                        if (((dest_val ^ final_res) & 0x80) && !((dest_val ^ src_val) & 0x80)) {
+                            ctx->flags |= OF_MASK;
+                        }
                         break;
                     }
 
+
                     /* =========================================================================
-                     * OPCODE 0x11: ADC r/m16, r16 (Add with Carry 16-bit, Reg to r/m)
+                     * OPCODE 0x11: ADC r/m16, r16 (Add with Carry 16-bit, Reg to r/m) - FIXED
                      * ========================================================================= */
                     case 0x11: {
                         uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
-
-                        /* Identify the 16 bits type (bits 3,4,5 of ModR/M) */
                         uint16_t* src_reg = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
-
-                        /* Idetify the destination operand r/m16 */
-                        uint16_t* dest_ptr = (((modrm >> 6) & 0x03) == 3)
-                        ? cpu286_get_reg16(ctx, modrm & 0x07)
-                        : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+                        uint16_t* dest_ptr = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
 
                         if (!src_reg || !dest_ptr) {
                             printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x11 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
                             exit(139);
                         }
 
-                        /* Extractions and allignment settle */
                         uint16_t src_val = *src_reg;
                         uint16_t dest_val = 0;
                         memcpy(&dest_val, dest_ptr, 2);
 
                         uint16_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
-
                         uint32_t temp_res = (uint32_t)dest_val + (uint32_t)src_val + carry;
                         uint16_t final_res = (uint16_t)(temp_res & 0xFFFF);
 
-                        /* Writing back while safeguard memory alignment */
                         if (((modrm >> 6) & 0x03) == 3) {
                             *dest_ptr = final_res;
                         } else {
                             memcpy(dest_ptr, &final_res, 2);
                         }
 
-                        /* Update 286 flags */
                         ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
                         if (temp_res > 0xFFFF) ctx->flags |= CF_MASK;
                         if (final_res == 0) ctx->flags |= ZF_MASK;
                         if (final_res & 0x8000) ctx->flags |= SF_MASK;
-                        if (!((dest_val ^ src_val) & 0x8000) && ((dest_val ^ final_res) & 0x8000)) ctx->flags |= OF_MASK;
 
+                        /* OF of 16-bit: check overflow using the signal bit 15 */
+                        if (((dest_val ^ final_res) & 0x8000) && !((dest_val ^ src_val) & 0x8000)) {
+                            ctx->flags |= OF_MASK;
+                        }
                         break;
                     }
 
+
                     /* =========================================================================
-                     * OPCODE 0x12: ADC r8, r/m8 (Add with Carry 8-bit)
+                     * OPCODE 0x12: ADC r8, r/m8 (Add with Carry 8-bit) - FIXED
                      * ========================================================================= */
                     case 0x12: {
                         uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
 
-                        /* Discover the 8-bit target register (bits 3,4,5 of ModR/M) */
                         uint8_t* dest_reg = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
 
-                        /* Find the operand in r/m8 */
                         uint8_t* src_ptr = (((modrm >> 6) & 0x03) == 3)
                         ? cpu286_get_reg8(ctx, modrm & 0x07)
                         : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
@@ -3606,44 +3627,32 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         uint8_t dest_val = *dest_reg;
                         uint8_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
 
-                        /* Execute the carry with 32 bits to evaluate more accuratly the flags */
                         uint32_t temp_res = (uint32_t)dest_val + (uint32_t)src_val + carry;
                         uint8_t final_res = (uint8_t)(temp_res & 0xFF);
 
-                        /* Update the target register */
                         *dest_reg = final_res;
 
-                        /* Update EFLAGS (CF, ZF, SF, OF) as specified by Intel */
                         ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
 
-                        /* 1. Carry Flag (CF): If the sum overflow 8 bits (255) */
                         if (temp_res > 0xFF) ctx->flags |= CF_MASK;
-
-                        /* 2. Zero Flag (ZF): If the final 8 bits result is 0 */
                         if (final_res == 0) ctx->flags |= ZF_MASK;
-
-                        /* 3. Sign Flag (SF): Map the MSB (bit 7) of result */
                         if (final_res & 0x80) ctx->flags |= SF_MASK;
 
-                        /* 4. Overflow Flag (OF): If add two large integers and the result shift sign */
-                        if (!((dest_val ^ src_val) & 0x80) && ((dest_val ^ final_res) & 0x80)) {
+                        if (((dest_val ^ final_res) & 0x80) && !((dest_val ^ src_val) & 0x80)) {
                             ctx->flags |= OF_MASK;
                         }
 
                         break;
                     }
 
-
                     /* =========================================================================
-                     * OPCODE 0x13: ADC r16, r/m16 (Add with Carry 16-bit) - INTEL 286 COMPATIBLE
+                     * OPCODE 0x13: ADC r16, r/m16 (Add with Carry 16-bit) - FIXED
                      * ========================================================================= */
                     case 0x13: {
                         uint8_t modrm = *args_ptr; ctx->ip++; args_ptr++;
 
-                        /* Discover the 16-bit target register (bits 3,4,5 do ModR/M) */
                         uint16_t* dest_reg = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
 
-                        /* Find the operand in r/m16 */
                         uint16_t* src_ptr = (((modrm >> 6) & 0x03) == 3)
                         ? cpu286_get_reg16(ctx, modrm & 0x07)
                         : (uint16_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
@@ -3653,34 +3662,26 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                             exit(139);
                         }
 
-                        /* safe extraction to avoid host misalignments */
                         uint16_t src_val = 0;
                         uint16_t dest_val = *dest_reg;
                         memcpy(&src_val, src_ptr, 2);
 
                         uint16_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
 
-                        /* Execute the carry with 32 bits to evaluate more accuratly the flags */
                         uint32_t temp_res = (uint32_t)dest_val + (uint32_t)src_val + carry;
                         uint16_t final_res = (uint16_t)(temp_res & 0xFFFF);
 
-                        /* Update the target register */
                         *dest_reg = final_res;
 
-                        /* Update EFLAGS (CF, ZF, SF, OF) as specified by Intel */
+                        /* Clear old flags, before reavluation */
                         ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
 
-                        /* 1. Carry Flag (CF): If the sum overflow the 16 bits (65535) */
                         if (temp_res > 0xFFFF) ctx->flags |= CF_MASK;
-
-                        /* 2. Zero Flag (ZF): If the 16-bits sum is 0 */
                         if (final_res == 0) ctx->flags |= ZF_MASK;
-
-                        /* 3. Sign Flag (SF): Map BSD (bit 15) from result */
                         if (final_res & 0x8000) ctx->flags |= SF_MASK;
 
-                        /* 4. Overflow Flag (OF): Overflow Flag (OF): If add two large integers and the result shift sign (bit 15) */
-                        if (!((dest_val ^ src_val) & 0x8000) && ((dest_val ^ final_res) & 0x8000)) {
+                        /* Apply OF_MASK if the signals are different */
+                        if (((dest_val ^ final_res) & 0x8000) && !((dest_val ^ src_val) & 0x8000)) {
                             ctx->flags |= OF_MASK;
                         }
 
@@ -3688,23 +3689,28 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     }
 
 
+
                     /* =========================================================================
                      * ARITHMETIC WITH CARRY EXTENSIONS (AL ACUMULATOR) - FIXED
                      * ========================================================================= */
-                    case 0x14: { /* ADC AL, ib (Add 8-bit Immediate with Carry to AL) */
-                        uint8_t imm = *args_ptr;
-                        ctx->ip++;
-                        args_ptr++; /* FIXED: sync the host pointers */
+                    case 0x14: { /* ADC AL, ib (Add 8-bit Immediate with Carry to AL) - FIXED */
+                        uint8_t imm = *args_ptr; ctx->ip++; args_ptr++;
 
-                        uint8_t carry = IS_CF_SET(ctx) ? 1 : 0;
-                        uint32_t res = (uint32_t)ctx->al + imm + carry;
+                        uint8_t dest_val = ctx->al;
+                        uint8_t carry = (ctx->flags & CF_MASK) ? 1 : 0;
+                        uint32_t res = (uint32_t)dest_val + (uint32_t)imm + carry;
+                        uint8_t final_res = (uint8_t)(res & 0xFF);
 
-                        cpu286_update_flags8(ctx, res);
-                        if (res > 0xFF) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                        ctx->flags &= ~(CF_MASK | ZF_MASK | SF_MASK | OF_MASK);
+                        if (res > 0xFF) ctx->flags |= CF_MASK;
+                        if (final_res == 0) ctx->flags |= ZF_MASK;
+                        if (final_res & 0x80) ctx->flags |= SF_MASK;
+                        if (((dest_val ^ final_res) & 0x80) && !((dest_val ^ imm) & 0x80)) ctx->flags |= OF_MASK;
 
-                        ctx->al = (uint8_t)res;
+                        ctx->al = final_res;
                         break;
                     }
+
 
 
                     /* =========================================================================
@@ -4168,21 +4174,20 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                             case 0xAE:   /* SCASB - Scan Byte (AL vs ES:DI) */
                             case 0xAF: { /* SCASW - Scan Word (AX vs ES:DI) */
                                 uint8_t prefix = ctx->rep_prefix;
+                                uint16_t element_size = (opcode == 0xAE) ? 1 : 2;
+
+                                /* With a priefix but CX is zero, do nothing */
                                 if ((prefix == 0xF3 || prefix == 0xF2) && ctx->cx == 0) {
-                                    ctx->rep_prefix = 0;
                                     break;
                                 }
 
-                                uint32_t count = (prefix == 0xF3 || prefix == 0xF2) ? ctx->cx : 1;
-                                uint16_t element_size = (opcode == 0xAE) ? 1 : 2;
-                                uint32_t iterations_executed = 0;
+                                while (1) {
+                                    if (ctx->es == 0) {
+                                        printf("\n[CRITICAL GPF] SCAS String scan attempted through a Null ES Selector!\n");
+                                        exit(139);
+                                    }
 
-                                if (ctx->es == 0) {
-                                    printf("\n[CRITICAL GPF] SCAS String scan attempted through a Null ES Selector!\n");
-                                    exit(139);
-                                }
-
-                                for (uint32_t i = 0; i < count; i++) {
+                                    /* Note: SCAS use only ES (do not accept target segment override) */
                                     void* dest_flat_ptr = mode16to32(ctx->es, ctx->di);
 
                                     if (!dest_flat_ptr) {
@@ -4190,40 +4195,56 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                                         exit(139);
                                     }
 
+                                    /* Accumulator is the origin value (AL ou AX) */
                                     uint32_t src_val = (element_size == 1) ? ctx->al : ctx->ax;
                                     uint32_t dest_val = 0;
 
                                     if (element_size == 1) {
                                         dest_val = *(uint8_t*)dest_flat_ptr;
-                                        uint32_t comparison_res = src_val - dest_val;
-                                        cpu286_update_flags8(ctx, comparison_res);
-                                        if (src_val < dest_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
                                     } else {
                                         memcpy(&dest_val, dest_flat_ptr, 2);
                                         dest_val &= 0xFFFF;
-                                        uint32_t comparison_res = src_val - dest_val;
+                                    }
+
+                                    /* Intel Spec: SCAS compare Accumulator - Memory (Src - Dest) to update flags */
+                                    uint32_t comparison_res = src_val - dest_val;
+
+                                    if (element_size == 1) {
+                                        cpu286_update_flags8(ctx, comparison_res);
+                                        if (src_val < dest_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                    } else {
                                         cpu286_update_flags16(ctx, comparison_res);
                                         if (src_val < dest_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
                                     }
 
-                                    iterations_executed++;
-
+                                    /* Update the target index */
                                     if (IS_DF_SET(ctx)) {
                                         ctx->di -= element_size;
                                     } else {
                                         ctx->di += element_size;
                                     }
 
-                                    if (prefix == 0xF3) { /* REPE / REPZ - If NOT is equal */
-                                        if (!IS_ZF_SET(ctx)) break;
+                                    /* If REP is inexistent, end after single execution */
+                                    if (prefix != 0xF3 && prefix != 0xF2) {
+                                        break;
                                     }
-                                    else if (prefix == 0xF2) { /* REPNE / REPNZ - If FOR is equal */
-                                        if (IS_ZF_SET(ctx)) break;
-                                    }
-                                }
 
-                                if (prefix == 0xF3 || prefix == 0xF2) {
-                                    ctx->cx -= (uint16_t)iterations_executed;
+                                    /* Decrease CX after ending the segment */
+                                    ctx->cx--;
+
+                                    /* Check atomic conditions */
+                                    if (ctx->cx == 0) {
+                                        break;
+                                    }
+
+                                    if (prefix == 0xF3 && !IS_ZF_SET(ctx)) {
+                                        /* REPE/REPZ: For a different element (ZF == 0) */
+                                        break;
+                                    }
+                                    if (prefix == 0xF2 && IS_ZF_SET(ctx)) {
+                                        /* REPNE/REPNZ: For an equal element (ZF == 1) */
+                                        break;
+                                    }
                                 }
                                 break;
                             }
