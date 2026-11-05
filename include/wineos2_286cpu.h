@@ -455,11 +455,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
     uint8_t* code_stream;
     uint8_t opcode;
-    uint8_t prefix = 0;
+    ctx->rep_prefix = 0;
+    ctx->seg_override = 0;
 
     uint16_t instruction_start_ip = ctx->ip;
 
-    re_execute:
+    while(1) { //prefix loop
     /* Get the real host pointer from current cycle IP */
     code_stream = (uint8_t*)mode16to32(ctx->cs, ctx->ip);
     if (!code_stream) {
@@ -473,14 +474,22 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
     if (opcode == 0xF3 || opcode == 0xF2) {
         ctx->rep_prefix = opcode;
         ctx->ip++;
-        goto re_execute;
+        continue;
     }
 
     /* Resolve override repetitions segments  */
-    if (opcode == 0x26) { ctx->seg_override = ctx->es; ctx->ip++; goto re_execute; }
-    if (opcode == 0x36) { ctx->seg_override = ctx->ss; ctx->ip++; goto re_execute; }
-    if (opcode == 0x2E) { ctx->seg_override = ctx->cs; ctx->ip++; goto re_execute; }
-    if (opcode == 0x3E) { ctx->seg_override = ctx->ds; ctx->ip++; goto re_execute; }
+    switch(opcode)
+    {
+      case 0x26: ctx->seg_override = ctx->es; ctx->ip++; continue; 
+      case 0x36:ctx->seg_override = ctx->ss; ctx->ip++; continue; 
+      case 0x2E: ctx->seg_override = ctx->cs; ctx->ip++; continue; 
+      case 0x3E: ctx->seg_override = ctx->ds; ctx->ip++; continue; 
+      default: break;
+    }
+
+    break;
+
+    }
 
     /* Advance to the opcode pointer. */
     ctx->ip++;
@@ -1596,7 +1605,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 /* If passes the privilege flag, active it and executes
                  * the next instruction comes next */
                 ctx->lock_prefix = 1;
-                goto re_execute;
+                ctx->ip++;
+                continue;
             }
 
 
