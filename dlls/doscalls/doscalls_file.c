@@ -373,7 +373,7 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                                if (!pulHandleType || !pulFlagWord) return 87;
                                                                if (hFile <= 2) {
                                                                    /* FIX: Corrected dereferenced pointer type assignments and re-opened code comments */
-                                                                   pulHandleType = 1; /* Character handle device structure mapping (Console/VIO) */
+                                                                   *pulHandleType = 1; /* Character handle device structure mapping (Console/VIO) */
                                                                    *pulFlagWord = 0;
                                                                    return NO_ERROR;
                                                                }
@@ -381,7 +381,7 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                                if (status == STATUS_SUCCESS) {
                                                                    if (fs_dev.DeviceType == FILE_DEVICE_DISK || fs_dev.DeviceType == FILE_DEVICE_DISK_FILE_SYSTEM) {
                                                                        /* FIX: Fixed comments block opening metrics syntax */
-                                                                       pulHandleType = 0; /* Standard discrete file handle target mapping layout */
+                                                                       *pulHandleType = 0; /* Standard discrete file handle target mapping layout */
                                                            } else {
                                                                *pulHandleType = 1;
                                                            }

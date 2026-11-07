@@ -112,82 +112,70 @@ static uint16_t allocate_ldt_entry(void* linear_address, ULONG size) {
     return 0;
 }
 
-/* API OS/2: DosAllocSeg(USHORT cbSize, PSEL pSel, USHORT fsAlloc) */
+/* API OS/2 1.x: DosAllocSeg(USHORT cbSize, PSEL pSel, USHORT fsAlloc) -> Total 8 Bytes */
 uint16_t os2_Dos16Allocseg(CPU286_Context* ctx) {
-    uint16_t sp_base = ctx->sp + 4; /* Push the FAR jump (CS:IP) */
+    uint16_t sp_base = ctx->sp + 4; /* Pull the CS:IP stack */
     
-    /* Obtain the Pascal argument stack */
+    /* pascal convention fixed */
     uint16_t fsAlloc  = *(uint16_t*)mode16to32(ctx->ss, sp_base + 0);
     uint16_t pSel_off = *(uint16_t*)mode16to32(ctx->ss, sp_base + 2);
     uint16_t pSel_sel = *(uint16_t*)mode16to32(ctx->ss, sp_base + 4);
     uint16_t cbSize   = *(uint16_t*)mode16to32(ctx->ss, sp_base + 6);
     
-    uint16_t* host_selector;
-    ULONG real_size;
-    void* heap_alloc;
-    uint16_t selector;
+    uint16_t* host_selector_ptr = (uint16_t*)mode16to32(pSel_sel, pSel_off);
+    if (!host_selector_ptr) return 87; /* ERROR_INVALID_PARAMETER */
 
-    host_selector = (uint16_t*)mode16to32(pSel_sel, pSel_off);
-    if (!host_selector) return 87; /* ERROR_INVALID_PARAMETER */
+    ULONG real_size = (cbSize == 0) ? 65536 : cbSize;
 
-    real_size = (cbSize == 0) ? 65536 : cbSize; /* 0 means a full 64KB block */
-
-    /* Using safer memory allocation functions */
-    heap_alloc = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, real_size);
+    void* heap_alloc = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, real_size);
     if (!heap_alloc) return 8; /* ERROR_NOT_ENOUGH_MEMORY */
 
-    /* settle memory adress to a free LDT */
-    selector = allocate_ldt_entry(heap_alloc, real_size);
+    uint16_t selector = allocate_ldt_entry(heap_alloc, real_size);
     if (selector == 0) {
         HeapFree(GetProcessHeap(), 0, heap_alloc);
-        return 8; /* ERROR_NOT_ENOUGH_MEMORY */
+        return 8;
     }
 
-    *host_selector = selector;
+    *host_selector_ptr = selector;
     return 0; /* NO_ERROR */
 }
 
-/* API OS/2: DosReAllocSeg(USHORT cbNewSize, SEL selector) */
+/* API OS/2 1.x: DosReallocSeg(USHORT cbNewSize, USHORT selector) -> Total 4 Bytes */
 uint16_t os2_Dos16ReAllocseg(CPU286_Context* ctx) {
     uint16_t sp_base = ctx->sp + 4; 
     
-    uint16_t* ptr_selector = (uint16_t*)mode16to32(ctx->ss, sp_base + 0);
-    uint16_t* ptr_cbSize   = (uint16_t*)mode16to32(ctx->ss, sp_base + 2);
+    /* FIX: Arguments are passed by the stack value, not pointer! */
+    uint16_t cbNewSize       = *(uint16_t*)mode16to32(ctx->ss, sp_base + 2);
+    uint16_t target_selector = *(uint16_t*)mode16to32(ctx->ss, sp_base + 0);
 
-    if (!ptr_selector || !ptr_cbSize) {
-        printf("[DOSCALLS] Dos16ReAllocseg: Invalid Memory Adress\n");
-        fflush(stdout);
-        return 87; /* ERROR_INVALID_PARAMETER */
-    }
-
-    uint16_t target_selector = *ptr_selector;
-    uint16_t cbNewSize       = *ptr_cbSize;
     uint16_t ldt_index = target_selector >> 3;
+
+    printf("[DOSCALLS] Dos16ReAllocseg: Selector #: 0x%04X | Requested New Size: %u bytes\n",
+           target_selector, cbNewSize);
+    fflush(stdout);
     
-    if (!virtual_ldt || ldt_index >= 8192 || !virtual_ldt[ldt_index].present) {
-        printf("[DOSCALLS] Dos16ReAllocseg: Invalid LDT selector at: 0x%04X\n", target_selector);
+    if (ldt_index >= 8192 || !virtual_ldt[ldt_index].present) {
+        printf("[DOSCALLS] Dos16ReAllocseg: Invalid LDT selector: 0x%04X\n", target_selector);
         fflush(stdout);
         return 5; /* ERROR_ACCESS_DENIED */
     }
 
     ULONG new_size = (cbNewSize == 0) ? 65536 : cbNewSize;
-
-    /* Get the original selector */
-     void* old_host_ptr = (void*)(uintptr_t)virtual_ldt[ldt_index].base;
-      void* new_host_ptr;
+    void* old_host_ptr = (void*)(uintptr_t)virtual_ldt[ldt_index].base;
+    void* new_host_ptr;
     
-    /* Update safely the selector */
     if (old_host_ptr) {
         new_host_ptr = HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, old_host_ptr, new_size);
     } else {
         new_host_ptr = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, new_size);
     }
 
-    if (!new_host_ptr) return 8; /* ERROR_NOT_ENOUGH_MEMORY */
+    if (!new_host_ptr) return 8;
 
-    /* Update the LDT table */
+    /* Update the virtual LDT table */
     virtual_ldt[ldt_index].base  = (uint32_t)(uintptr_t)new_host_ptr;
     virtual_ldt[ldt_index].limit = (uint32_t)(new_size - 1);
 
     return 0; /* NO_ERROR */
 }
+

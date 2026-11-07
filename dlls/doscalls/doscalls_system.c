@@ -16,7 +16,7 @@
 #define WINEOS2_REG_ENV "Software\\Wine\\WineOS2\\Environment"
 
 /* FIX: Correctly allocated a real array of 256 pointers for software interrupt vectors */
-extern void** runtime_interrupt_vectors;
+extern void* os2_interrupt_vectors[256];
 
 /* Internal helper routing method to pull registry settings variables dynamically */
 static BOOL read_wineos2_reg_string(const char* value_name, char* out_buf, DWORD buf_size) {
@@ -133,13 +133,13 @@ APIRET CDECL os2_DosSetVec(ULONG vecNum, PVOID pHandler, PVOID pPrevHandler) {
     printf("[DOSCALLS] DosSetVec with %i interrupt.\n",vecNum);
     fflush(stdout);
 
-    if (vecNum >= 256 || !runtime_interrupt_vectors) return 87;
+    if (vecNum >= 256) return 87;
 
     if (pPrevHandler) {
-        uint32_t* pPrev32 = (uint32_t*)pPrevHandler;
-        *pPrev32 = 0; //previous handle should be cleared
+        void** pPrevOut = (void**)pPrevHandler;
+        *pPrevOut = os2_interrupt_vectors[vecNum];
     }
-    runtime_interrupt_vectors[vecNum] = pHandler;
+    os2_interrupt_vectors[vecNum] = pHandler;
     return NO_ERROR;
 }
 
