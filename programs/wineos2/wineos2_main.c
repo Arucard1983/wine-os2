@@ -231,8 +231,9 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
     cpu_context.cs = (ne_hdr.initial_cs_seg << 3) | 3;
     cpu_context.ip = ne_hdr.initial_ip;
 
+    /* ENFORCED FIX: Remove non-sensical hardcoded selector to dynamic one */
     if (ne_hdr.initial_ss_seg == 0) {
-        cpu_context.ss = 0x0013;
+        cpu_context.ss = (ne_hdr.auto_data_seg << 3) | 3;
         cpu_context.sp = 0xFFFE;
     } else {
         cpu_context.ss = (ne_hdr.initial_ss_seg << 3) | 3;
@@ -244,31 +245,20 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
         cpu_context.sp = 0xFFFE;
     }
 
-    auto_data_selector = 0x0013;
+    /* Removing hardcoded initial segment */
+    if (ne_hdr.auto_data_seg > 0 && ne_hdr.auto_data_seg <= ne_hdr.seg_count) {
+        auto_data_selector = (ne_hdr.auto_data_seg << 3) | 3;
+    } else {
+        /* Structural fallback if the program is Single-Segment */
+        auto_data_selector = cpu_context.cs;
+    }
+
     cpu_context.ax = auto_data_selector;
     cpu_context.ds = auto_data_selector;
+    cpu_context.es = auto_data_selector; /* Inicializa também ES para evitar exceções nulas */
     cpu_context.bx = 0x0100;
     cpu_context.cx = 0x4000;
     cpu_context.flags = 0x0202;
-
-    uint16_t required_idx = 0x0013 >> 3; /* Índice 2 */
-    if (!virtual_ldt[required_idx].present) {
-        void* data_mem = VirtualAlloc(NULL, 0x10000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!data_mem) {
-            printf("[NE Loader Error] Failed to allocate automatic data segment space.\n");
-            return 0;
-        }
-        memset(data_mem, 0, 0x10000);
-
-        virtual_ldt[required_idx].base       = (uintptr_t)data_mem;
-        virtual_ldt[required_idx].limit      = 0xFFFF;
-        virtual_ldt[required_idx].present    = 1;
-        virtual_ldt[required_idx].read_write = 1;
-        virtual_ldt[required_idx].type       = LDT_TYPE_SEGMENT;
-
-        printf("[NE Loader] Emergency LDT Alloc -> Created Data/Stack Segment at: %p | Selector: 0x0013\n",
-               data_mem);
-    }
 
     printf("\n--- LDT CHECKUP (Searching active callgates) ---\n");
     int callgates_found = 0;
@@ -325,16 +315,41 @@ __declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_n
     return 0;
 }
 
+/* =========================================================================
+* REAL INTERRUPT VECTORS TABLE INSTANCE (CPU PROTECTED MODE COMPLIANCE)
+* ========================================================================= */
+
+/* Physical allocation of IDT required by 286 emulator */
+void* os2_interrupt_vectors[256] = { NULL };
+
+/* Required to critical DLL like DOSCALLS.DLL to handle virtual tables */
+__declspec(dllexport) void* CDECL wineos2_get_interrupt_vectors_ptr(void) {
+    return (void*)os2_interrupt_vectors;
+}
+
 uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
     uint16_t i;
+    char upper_mod[256];
+
+    // Check case-sensitive checking
+    lstrcpynA(upper_mod, mod_name, sizeof(upper_mod));
+    for (int j = 0; upper_mod[j]; j++) {
+        upper_mod[j] = (char)toupper((unsigned char)upper_mod[j]);
+    }
+
     for (i = 500; i < LDT_MAX_ENTRIES; i++) {
-        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE &&
-            virtual_ldt[i].limit == ordinal && strcmp(virtual_ldt[i].mod_name, mod_name) == 0) {
-            return (i << 3) | 3;
+        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE) {
+            if (virtual_ldt[i].limit == ordinal) {
+                // Critical fic: Compare until maximum size of mod_name
+                if (strncmp(virtual_ldt[i].mod_name, upper_mod, sizeof(virtual_ldt[i].mod_name)) == 0) {
+                    return (i << 3) | 3;
+                }
             }
+        }
     }
     return 0;
 }
+
 
 /*  clear wine cache  */
 extern void wineos2_free_module_cache(void);
