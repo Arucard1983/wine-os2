@@ -247,9 +247,16 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
             }
             else if (base_item.target_type == 1 || base_item.target_type == 2) {
                 if (pure_source_type == 3) {
-                    *(uint16_t*)patch_address = resolved_selector;
+                    if (*(patch_address - 1) == 0x9A) {
+                        *(uint16_t*)patch_address = 0x0000;              // For FF FF going zero with 9A opcode
+                        *(uint16_t*)(patch_address + 2) = resolved_selector; // Store selector
+                    } else {
+                        // For other situations
+                        *(uint16_t*)patch_address = resolved_selector;
+                    }
                 }
                 else if (pure_source_type == 5) {
+                    *(uint16_t*)patch_address = internal_offset;
                     *(uint16_t*)(patch_address + 2) = resolved_selector;
                 }
             }
