@@ -409,10 +409,10 @@ static inline void fpu_update_status_compare(CPU286_Context* ctx, long double st
         // Invalid case / Not comparable (Unordered)
         ctx->env16.status_word |= (0x0100 | 0x0400 | 0x4000); // C0=1, C2=1, C3=1
 
-        // FIX: Real 80287 real singlas Invalid Operation Exception (#IE) on biy 0
+        // FIX: Real 80287 single Invalid Operation Exception (#IE) on by 0
         ctx->env16.status_word |= 0x0001;
     } else if (st0 > op) {
-        // ST0 > Operand: C3=0, C2=0, C0=0 (Já limpo pela clear_mask)
+        // ST0 > Operand: C3=0, C2=0, C0=0 (already cleanded by clear_mask)
     } else if (st0 < op) {
         // ST0 < Operand: C3=0, C2=0, C0=1
         ctx->env16.status_word |= 0x0100;
@@ -1148,7 +1148,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
                 /* =========================================================================
                  * FPU ESCAPE GROUP 0xDB: 32-bits Integers (FILD/FISTP), m80BCD and FSETPM
-                 * STRICT 80287 IMPLEMENTATION - CORRIGIDO PARA NOVO DESIGN ATÓMICO
+                 * STRICT 80287 IMPLEMENTATION - FIXED
                  * ========================================================================= */
                 case 0xDB: {
                     uint8_t peak_modrm = *(code_stream + 1);
@@ -1160,7 +1160,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     }
 
                     uint8_t modrm = *args_ptr;
-                    uint8_t* local_args = args_ptr + 1; // Aponta logo após o ModR/M
+                    uint8_t* local_args = args_ptr + 1; // Point after ModR/M
                     uint8_t sub_op = (modrm >> 3) & 0x07;
 
                     // 1. Reg-to-Reg operations (MOD == 11b)
@@ -2318,7 +2318,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
                 /* =========================================================================
-                 * FAR POINTER LOADERS (LDS / LES) - REVISADO PARA CÁLCULO ATÓMICO DE IP
+                 * FAR POINTER LOADERS (LDS / LES) - FIXED
                  * ========================================================================= */
                 case 0xC4:   /* LES Gv, Mp (Load ES and Register with Far Pointer) */
                 case 0xC5: { /* LDS Gv, Mp (Load DS and Register with Far Pointer) */
@@ -2623,7 +2623,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 }
 
                 /* =========================================================================
-                 * HARDWARE STACK OPERATIONS (POP Ev) - REVISADO ATÓMICO
+                 * HARDWARE STACK OPERATIONS (POP Ev) - FIXED
                  * ========================================================================= */
                 case 0x8F: { /* POP Ev (Pop Word from Stack to Memory/Register) */
                     uint8_t modrm = *args_ptr;
@@ -3749,6 +3749,12 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             uint16_t next_instruction_ip = ctx->ip + 2;
             OS2_IDT_ENTRY* idt_entry = &virtual_idt[int_vector];
 
+            /* 0. Special Bypass to INT 7*/
+            if (int_vector == 0x07) {
+                printf("[IDT WARNING] Math Co-Processor 287 cannot be overriden. Ignoring INT 7 custom code...\n");
+                break;
+            }
+            
             /* 1. Check if the interruption was already registed (ex: internal hooks) */
             if (idt_entry->present && idt_entry->wine_int_thunk) {
                 ctx->ip = next_instruction_ip;
@@ -4022,7 +4028,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         }
 
         /* =========================================================================
-         * IMMEDIATE LOGICAL OPERATIONS (XOR ACCUMULATOR) - REVISADO ATÓMICO
+         * IMMEDIATE LOGICAL OPERATIONS (XOR ACCUMULATOR) - FIXED
          * ========================================================================= */
         case 0x34: { /* XOR AL, ib (Logical Exclusive OR Immediate Byte to AL) */
             uint8_t imm8 = *args_ptr;
