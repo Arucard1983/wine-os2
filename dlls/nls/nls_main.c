@@ -55,15 +55,13 @@ APIRET CDECL os2_DosQueryDBCSEnv(ULONG cbBuf, PVOID pCountryCode, PBYTE pBuf) {
  * ========================================================================= */
 
 uint16_t os2_Dos16GetCollate(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-
-    uint16_t cbBuf      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 12);
-    uint16_t ctry_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
-    uint16_t ctry_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t buf_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t buf_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t len_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t len_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t cbBuf      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 12);
+    uint16_t ctry_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+    uint16_t ctry_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+    uint16_t buf_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t buf_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t len_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t len_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     void* host_ctry     = mode16to32(ctry_sel, ctry_off);
     BYTE* host_buf      = (BYTE*)mode16to32(buf_sel, buf_off);
@@ -81,13 +79,11 @@ uint16_t os2_Dos16GetCollate(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Dos16GetDBCSEv(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-
-    uint16_t cbBuf     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t ctry_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t ctry_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t buf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t buf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t cbBuf     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+    uint16_t ctry_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t ctry_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t buf_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t buf_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     void* host_ctry = mode16to32(ctry_sel, ctry_off);
     BYTE* host_buf  = (BYTE*)mode16to32(buf_sel, buf_off);
