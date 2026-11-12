@@ -103,11 +103,10 @@ APIRET CDECL os2_KbdFlushBuffer(HKBD hkbd) {
  * ========================================================================= */
 
 uint16_t os2_Kbd16CharIn(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4; 
-    uint16_t pInfo_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t pInfo_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t fWait     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t pInfo_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t pInfo_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t fWait     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     KBDKEYINFO* host_info = (KBDKEYINFO*)mode16to32(pInfo_sel, pInfo_off);
     if (!host_info) return 87;
@@ -117,13 +116,12 @@ uint16_t os2_Kbd16CharIn(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Kbd16StringIn(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
-    uint16_t pStr_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t pBuf_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t pBuf_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t fWait     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+    uint16_t pStr_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+    uint16_t pBuf_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t pBuf_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t fWait     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     char* host_str = (char*)mode16to32(pStr_sel, pStr_off);
     STRINGINBUF* host_buf = (STRINGINBUF*)mode16to32(pBuf_sel, pBuf_off);
@@ -134,10 +132,9 @@ uint16_t os2_Kbd16StringIn(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Kbd16SetStatus(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pStat_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t pStat_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t pStat_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t pStat_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     KBDSTATUS* host_stat = (KBDSTATUS*)mode16to32(pStat_sel, pStat_off);
     if (!host_stat) return 87;
@@ -147,10 +144,9 @@ uint16_t os2_Kbd16SetStatus(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Kbd16GetStatus(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pStat_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t pStat_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t pStat_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t pStat_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     KBDSTATUS* host_stat = (KBDSTATUS*)mode16to32(pStat_sel, pStat_off);
     if (!host_stat) return 87;
@@ -160,8 +156,7 @@ uint16_t os2_Kbd16GetStatus(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Kbd16FlushBuffer(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t hkbd      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     APIRET rc = os2_KbdFlushBuffer((HKBD)hkbd);
     return (uint16_t)rc;
