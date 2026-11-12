@@ -387,25 +387,24 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                            }
                                                            *pulFlagWord = 0;
                                                            return NO_ERROR;
-                                                       }
-                                                       return 6;
+                                                         }
+                                                         return 6;
                                                        }
 
                                                        /* =========================================================================
                                                         * 16-BIT EMULATED CORES (NE Subsystem File Operations Marshalling)
                                                         * ========================================================================= */
                                                        uint16_t os2_Dos16Open(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t name_sel   = (uint16_t)mode16to32(ctx->ss, sp_offset + 22);
-                                                           uint16_t name_off   = (uint16_t)mode16to32(ctx->ss, sp_offset + 20);
-                                                           uint16_t hfile_sel  = (uint16_t)mode16to32(ctx->ss, sp_offset + 16);
-                                                           uint16_t hfile_off  = (uint16_t)mode16to32(ctx->ss, sp_offset + 14);
-                                                           uint16_t action_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 12);
-                                                           uint16_t action_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 10);
-                                                           uint32_t cbFile     = (uint32_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t ulAttr     = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint16_t openFlags  = (uint16_t)mode16to32(ctx->ss, sp_offset + 2);
-                                                           uint16_t openMode   = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t name_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 22);
+                                                           uint16_t name_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 20);
+                                                           uint16_t hfile_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 16);
+                                                           uint16_t hfile_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 14);
+                                                           uint16_t action_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 12);
+                                                           uint16_t action_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+                                                           uint32_t cbFile     = *(uint32_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t ulAttr     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint16_t openFlags  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                                                           uint16_t openMode   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            const char* host_name = (const char*)mode16to32(name_sel, name_off);
                                                            uint16_t* host_hfile  = (uint16_t*)mode16to32(hfile_sel, hfile_off);
                                                            uint16_t* host_action = (uint16_t*)mode16to32(action_sel, action_off);
@@ -420,32 +419,29 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16Close(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t hFile = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t hFile = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            APIRET rc = os2_DosClose((ULONG)hFile);
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16Delete(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t name_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t name_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint32_t reserved = (uint32_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t name_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t name_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint32_t reserved = *(uint32_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            const char* host_name = (const char*)mode16to32(name_sel, name_off);
                                                            if (!host_name) return 87;
                                                            APIRET rc = os2_DosDelete(host_name, reserved);
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16FindFirst(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t spec_sel  = (uint16_t)mode16to32(ctx->ss, sp_offset + 16);
-                                                           uint16_t spec_off  = (uint16_t)mode16to32(ctx->ss, sp_offset + 14);
-                                                           uint16_t hdir_sel  = (uint16_t)mode16to32(ctx->ss, sp_offset + 12);
-                                                           uint16_t hdir_off  = (uint16_t)mode16to32(ctx->ss, sp_offset + 10);
-                                                           uint16_t attr      = (uint16_t)mode16to32(ctx->ss, sp_offset + 8);
-                                                           uint16_t buf_sel   = (uint16_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t buf_off   = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint16_t count_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 2);
-                                                           uint16_t count_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t spec_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 16);
+                                                           uint16_t spec_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 14);
+                                                           uint16_t hdir_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 12);
+                                                           uint16_t hdir_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+                                                           uint16_t attr      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+                                                           uint16_t buf_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t buf_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint16_t count_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                                                           uint16_t count_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            const char* host_spec = (const char*)mode16to32(spec_sel, spec_off);
                                                            uint16_t* host_hdir   = (uint16_t*)mode16to32(hdir_sel, hdir_off);
                                                            void* host_buf        = mode16to32(buf_sel, buf_off);
@@ -461,13 +457,12 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16FindNext(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t hDir      = (uint16_t)mode16to32(ctx->ss, sp_offset + 10);
-                                                           uint16_t buf_sel   = (uint16_t)mode16to32(ctx->ss, sp_offset + 8);
-                                                           uint16_t buf_off   = (uint16_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t cbBuf     = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint16_t count_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 2);
-                                                           uint16_t count_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t hDir      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+                                                           uint16_t buf_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+                                                           uint16_t buf_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t cbBuf     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint16_t count_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                                                           uint16_t count_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            void* host_buf       = mode16to32(buf_sel, buf_off);
                                                            uint16_t* host_count = (uint16_t*)mode16to32(count_sel, count_off);
                                                            if (!host_buf || !host_count) return 87;
@@ -479,12 +474,11 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16ChgFilePtr(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t hFile      = (uint16_t)mode16to32(ctx->ss, sp_offset + 10);
-                                                           int32_t  ib         = (int32_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t method     = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint16_t ibAct_sel  = (uint16_t)mode16to32(ctx->ss, sp_offset + 2);
-                                                           uint16_t ibAct_off  = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+                                                           int32_t  ib         = *(int32_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t method     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint16_t ibAct_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                                                           uint16_t ibAct_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            uint32_t* host_actual = (uint32_t*)mode16to32(ibAct_sel, ibAct_off);
                                                            ULONG actual32 = 0;
                                                            if (!host_actual) return 87;
@@ -495,29 +489,26 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16NewSize(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t hFile  = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint32_t cbSize = (uint32_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t hFile  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint32_t cbSize = *(uint32_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            APIRET rc = os2_DosSetFileSize((ULONG)hFile, (ULONG)cbSize);
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16QFHandState(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t hFile     = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint16_t pStat_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 2);
-                                                           uint16_t pStat_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t hFile     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint16_t pStat_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                                                           uint16_t pStat_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            uint16_t* host_state = (uint16_t*)mode16to32(pStat_sel, pStat_off);
                                                            if (!host_state) return 87;
                                                            *host_state = 0x0000;
                                                            return 0;
                                                        }
                                                        uint16_t os2_Dos16QFileMode(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t name_sel  = (uint16_t)mode16to32(ctx->ss, sp_offset + 10);
-                                                           uint16_t name_off  = (uint16_t)mode16to32(ctx->ss, sp_offset + 8);
-                                                           uint16_t attr_sel  = (uint16_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t attr_off  = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint32_t reserved  = (uint32_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t name_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+                                                           uint16_t name_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+                                                           uint16_t attr_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t attr_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint32_t reserved  = *(uint32_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            const char* host_name = (const char*)mode16to32(name_sel, name_off);
                                                            uint16_t* host_attr   = (uint16_t*)mode16to32(attr_sel, attr_off);
                                                            ULONG attr32 = 0;
@@ -527,41 +518,41 @@ APIRET CDECL os2_DosOpen(const char* pszFileName, PULONG phFile, PULONG pulActio
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16SetFileMode(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t name_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 8);
-                                                           uint16_t name_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t attr     = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint32_t reserved = (uint32_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t name_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+                                                           uint16_t name_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t attr     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint32_t reserved = *(uint32_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            const char* host_name = (const char*)mode16to32(name_sel, name_off);
                                                            if (!host_name) return 87;
                                                            APIRET rc = os2_DosSetFileMode(host_name, (ULONG)attr, reserved);
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16SetFileInfo(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t hFile     = (uint16_t)mode16to32(ctx->ss, sp_offset + 8);
-                                                           uint16_t level     = (uint16_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t buf_sel   = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint16_t buf_off   = (uint16_t)mode16to32(ctx->ss, sp_offset + 2);
-                                                           uint16_t cbBuf     = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t hFile     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+                                                           uint16_t level     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t buf_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint16_t buf_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                                                           uint16_t cbBuf     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            void* host_buf = mode16to32(buf_sel, buf_off);
                                                            if (!host_buf) return 87;
                                                            APIRET rc = os2_DosSetFileInfo((ULONG)hFile, (ULONG)level, host_buf, (ULONG)cbBuf);
                                                            return (uint16_t)rc;
                                                        }
                                                        uint16_t os2_Dos16QHandType(CPU286_Context* ctx) {
-                                                           uint16_t sp_offset = ctx->sp + 4;
-                                                           uint16_t hFile    = (uint16_t)mode16to32(ctx->ss, sp_offset + 8);
-                                                           uint16_t type_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 6);
-                                                           uint16_t type_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 4);
-                                                           uint16_t attr_sel = (uint16_t)mode16to32(ctx->ss, sp_offset + 2);
-                                                           uint16_t attr_off = (uint16_t)mode16to32(ctx->ss, sp_offset + 0);
+                                                           uint16_t hFile    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+                                                           uint16_t type_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                                                           uint16_t type_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                                                           uint16_t attr_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                                                           uint16_t attr_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
                                                            uint16_t* host_type = (uint16_t*)mode16to32(type_sel, type_off);
                                                            uint16_t* host_attr = (uint16_t*)mode16to32(attr_sel, attr_off);
+                                                           uint8_t check1 = (!host_type) ? 0 : 1; uint8_t check2 = (!host_attr) ? 0 : 1; uint8_t test = (!host_type || !host_attr);
+                                                           printf("[DOSCALLS 16-BIT] Dos16QHandType check type %i and attribute %i, meaning that the control is %i ...\n",check1,check2,test);
                                                            if (!host_type || !host_attr) return 87;
                                                            ULONG type32 = 0;
                                                            ULONG attr32 = 0;
                                                            APIRET rc = os2_DosQueryHType((ULONG)hFile, &type32, &attr32);
+                                                           printf("[DOSCALLS 16-BIT] Dos16QHandType called with return %i, host type 0x%04X and attribute 0x%04X\n",rc,*host_type,*host_attr);
                                                            if (rc == NO_ERROR) {
                                                                *host_type = (uint16_t)type32;
                                                                *host_attr = (uint16_t)attr32;

@@ -114,13 +114,11 @@ static uint16_t allocate_ldt_entry(void* linear_address, ULONG size) {
 
 /* API OS/2 1.x: DosAllocSeg(USHORT cbSize, PSEL pSel, USHORT fsAlloc) -> Total 8 Bytes */
 uint16_t os2_Dos16Allocseg(CPU286_Context* ctx) {
-    uint16_t sp_base = ctx->sp + 4; /* Pull the CS:IP stack */
-    
     /* pascal convention fixed */
-    uint16_t fsAlloc  = *(uint16_t*)mode16to32(ctx->ss, sp_base + 0);
-    uint16_t pSel_off = *(uint16_t*)mode16to32(ctx->ss, sp_base + 2);
-    uint16_t pSel_sel = *(uint16_t*)mode16to32(ctx->ss, sp_base + 4);
-    uint16_t cbSize   = *(uint16_t*)mode16to32(ctx->ss, sp_base + 6);
+    uint16_t fsAlloc  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
+    uint16_t pSel_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t pSel_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t cbSize   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
     
     uint16_t* host_selector_ptr = (uint16_t*)mode16to32(pSel_sel, pSel_off);
     if (!host_selector_ptr) return 87; /* ERROR_INVALID_PARAMETER */
@@ -142,11 +140,9 @@ uint16_t os2_Dos16Allocseg(CPU286_Context* ctx) {
 
 /* API OS/2 1.x: DosReallocSeg(USHORT cbNewSize, USHORT selector) -> Total 4 Bytes */
 uint16_t os2_Dos16ReAllocseg(CPU286_Context* ctx) {
-    uint16_t sp_base = ctx->sp + 4; 
-    
     /* FIX: Arguments are passed by the stack value, not pointer! */
-    uint16_t cbNewSize       = *(uint16_t*)mode16to32(ctx->ss, sp_base + 2);
-    uint16_t target_selector = *(uint16_t*)mode16to32(ctx->ss, sp_base + 0);
+    uint16_t cbNewSize       = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t target_selector = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     uint16_t ldt_index = target_selector >> 3;
 

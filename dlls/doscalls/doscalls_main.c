@@ -15,22 +15,11 @@
 #include "wineos2_286cpu.h"
 
 OS2_LDT_ENTRY* virtual_ldt = NULL;
+OS2_IDT_ENTRY* virtual_idt = NULL;
 
 typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
 typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
-typedef void* (CDECL *PFN_wineos2_get_interrupt_vectors_ptr)(void);
-
-/* IDT pointer*/
-void** runtime_interrupt_vectors = NULL;
-
-/* IDT table (256 vectors) */
-void* os2_interrupt_vectors[256] = { NULL };
-
-/* Export function for dybnamic DLLs (like DOSCALLS.DLL) */
-__declspec(dllexport) void* CDECL wineos2_get_interrupt_vectors_ptr(void) {
-    return (void*)os2_interrupt_vectors;
-}
-
+typedef void* (CDECL *PFN_wineos2_get_idt_ptr)(void);
 
 /* Manual redeclarations of NTDLL functions not conflicting with winternl.h */
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE handle, NTSTATUS exit_status);
@@ -151,24 +140,22 @@ APIRET CDECL os2_DosExit(ULONG action, ULONG result) {
  * ========================================================================= */
 
 uint16_t os2_Dos16Exit(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t action_flags = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t result_code  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t action_flags = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t result_code  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     os2_DosExit((ULONG)action_flags, (ULONG)result_code);
     return 0;
 }
 
 uint16_t os2_Dos16Write(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
     ULONG bytes_written = 0;
 
-    uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
-    uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t cbWrite    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t pAct_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t pAct_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+    uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+    uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t cbWrite    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t pAct_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t pAct_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     char* host_buffer     = (char*)mode16to32(pBuf_sel, pBuf_off);
     uint16_t* host_actual = (uint16_t*)mode16to32(pAct_sel, pAct_off);
@@ -182,15 +169,14 @@ uint16_t os2_Dos16Write(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Dos16Read(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
     ULONG bytes_read = 0;
 
-    uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
-    uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t cbRead     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t pRead_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t pRead_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t hFile      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+    uint16_t pBuf_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+    uint16_t pBuf_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t cbRead     = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t pRead_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t pRead_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     uint8_t* host_buffer = (uint8_t*)mode16to32(pBuf_sel, pBuf_off);
     uint16_t* host_read  = (uint16_t*)mode16to32(pRead_sel, pRead_off);
@@ -212,7 +198,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         HMODULE hCore;
         PFN_wineos2_register_callgate pfnRegister;
         PFN_wineos2_get_ldt_ptr pfnGetLdt;
-        typedef void* (CDECL *PFN_wineos2_get_interrupt_vectors_ptr)(void);
+        PFN_wineos2_get_idt_ptr pfnGetIdt;
 
         DisableThreadLibraryCalls(hinstDLL);
 
@@ -222,12 +208,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnGetLdt = (PFN_wineos2_get_ldt_ptr)GetProcAddress(hCore, "wineos2_get_ldt_ptr");
         if (pfnGetLdt) virtual_ldt = (OS2_LDT_ENTRY*)pfnGetLdt();
 
-        PFN_wineos2_get_interrupt_vectors_ptr pfnGetVectors =
-        (PFN_wineos2_get_interrupt_vectors_ptr)GetProcAddress(hCore, "wineos2_get_interrupt_vectors_ptr");
-        if (pfnGetVectors) {
-            // runtime_interrupt_vectors catch the internal pointer od the global array of loader
-            runtime_interrupt_vectors = (void**)pfnGetVectors();
-        }
+        pfnGetIdt = (PFN_wineos2_get_idt_ptr)GetProcAddress(hCore, "wineos2_get_idt_ptr");
+        if (pfnGetIdt) virtual_idt = (OS2_IDT_ENTRY*)pfnGetIdt();
 
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) return FALSE;
@@ -246,7 +228,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnRegister("DOSCALLS", 70,  24, os2_Dos16Open);
         pfnRegister("DOSCALLS", 74,  6,  os2_Dos16QFHandState);
         pfnRegister("DOSCALLS", 75,  6,  os2_Dos16QFileMode);
-        pfnRegister("DOSCALLS", 77,  8,  os2_Dos16QHandType);
+        pfnRegister("DOSCALLS", 77,  10, os2_Dos16QHandType);
         pfnRegister("DOSCALLS", 83,  10, os2_Dos16SetFileInfo);
         pfnRegister("DOSCALLS", 84,  8,  os2_Dos16SetFileMode);
         pfnRegister("DOSCALLS", 89,  10, os2_Dos16SetVec);

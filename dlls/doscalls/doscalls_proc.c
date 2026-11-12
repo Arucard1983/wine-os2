@@ -87,17 +87,16 @@ APIRET CDECL os2_DosExecPgm(char* pObjname, ULONG cbObjname, ULONG execFlags,
  * ========================================================================= */
 
 uint16_t os2_Dos16ExecPgm(CPU286_Context* ctx) {
-                uint16_t sp_offset = ctx->sp + 4;
-                uint16_t obj_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 18);
-                uint16_t obj_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 16);
-                uint16_t cbObjName  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 14);
-                uint16_t execFlags  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 12);
-                uint16_t arg_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
-                uint16_t arg_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-                uint16_t env_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-                uint16_t env_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-                uint16_t res_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-                uint16_t res_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+                uint16_t obj_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 18);
+                uint16_t obj_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 16);
+                uint16_t cbObjName  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 14);
+                uint16_t execFlags  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 12);
+                uint16_t arg_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+                uint16_t arg_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+                uint16_t env_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+                uint16_t env_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+                uint16_t res_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+                uint16_t res_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
                 /* FIX: Corrected semantic mapping pointers */
                 char* host_objname  = (char*)mode16to32(obj_sel, obj_off);

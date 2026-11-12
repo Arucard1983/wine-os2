@@ -15,8 +15,8 @@
 
 #define WINEOS2_REG_ENV "Software\\Wine\\WineOS2\\Environment"
 
-/* FIX: Correctly allocated a real array of 256 pointers for software interrupt vectors */
-extern void* os2_interrupt_vectors[256];
+/* Calling from main the virtual interrupt dispatch table */
+extern OS2_IDT_ENTRY* virtual_idt;
 
 /* Internal helper routing method to pull registry settings variables dynamically */
 static BOOL read_wineos2_reg_string(const char* value_name, char* out_buf, DWORD buf_size) {
@@ -130,16 +130,27 @@ APIRET CDECL os2_DosSearchPath(ULONG flags, const char* pszPathRef, const char* 
 }
 
 APIRET CDECL os2_DosSetVec(ULONG vecNum, PVOID pHandler, PVOID pPrevHandler) {
-    printf("[DOSCALLS] DosSetVec with %i interrupt.\n",vecNum);
+    printf("[DOSCALLS] DosSetVec with %u interrupt.\n",vecNum);
     fflush(stdout);
 
-    if (vecNum >= 256) return 87;
-
-    if (pPrevHandler) {
-        void** pPrevOut = (void**)pPrevHandler;
-        *pPrevOut = os2_interrupt_vectors[vecNum];
+    if (!virtual_idt || vecNum >= IDT_MAX_ENTRIES) { /* Check domain*/
+        return 87; /* ERROR_INVALID_PARAMETER */
     }
-    os2_interrupt_vectors[vecNum] = pHandler;
+
+    if (pPrevHandler) { /* Previous handler*/
+        OS2_IDT_ENTRY* prev_out = (OS2_IDT_ENTRY*)pPrevHandler;
+        *prev_out = virtual_idt[vecNum];
+    }
+
+    if (pHandler) {  /*Register new handler*/
+        virtual_idt[vecNum].wine_int_thunk = (uint16_t (*)(CPU286_Context*))pHandler;
+        virtual_idt[vecNum].present = 1;
+        virtual_idt[vecNum].type = IDT_TYPE_INTGATE;
+        virtual_idt[vecNum].dpl = 3;
+    } else {
+        memset(&virtual_idt[vecNum], 0, sizeof(OS2_IDT_ENTRY));
+    }
+
     return NO_ERROR;
 }
 
@@ -148,13 +159,16 @@ APIRET CDECL os2_DosSetVec(ULONG vecNum, PVOID pHandler, PVOID pPrevHandler) {
  * ========================================================================= */
 
 uint16_t os2_Dos16GetVersion(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pVer_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t pVer_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t pVer_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t pVer_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
     uint16_t* host_ver = (uint16_t*)mode16to32(pVer_sel, pVer_off);
 
     ULONG ver32 = 0;
     APIRET rc = os2_DosGetVersion(&ver32);
+
+    uint8_t check = (!host_ver) ? 0 : 1;
+    printf("[DOSCALLS 16-BIT] Dos16GetVersion called with return %i and version %i where the host is working ? %i\n",rc,ver32,check);
+    fflush(stdout);
 
     if (rc == NO_ERROR && host_ver) {
         /*
@@ -166,38 +180,43 @@ uint16_t os2_Dos16GetVersion(CPU286_Context* ctx) {
         uint8_t major = (uint8_t)(ver32 >> 8);
         uint8_t minor = (uint8_t)(ver32 & 0xFF);
         *host_ver = (uint16_t)((minor << 8) | major);
+        printf("[DOSCALLS 16-BIT] Dos16GetVersion 0x%04X\n",*host_ver);
+        fflush(stdout);
     }
     return (uint16_t)rc;
 }
 
 uint16_t os2_Dos16GetMachineMode(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pMode_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t pMode_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t pMode_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t pMode_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
     uint8_t* host_mode = (uint8_t*)mode16to32(pMode_sel, pMode_off);
-
-    if (!host_mode) return 87;
 
     BYTE mode32 = 0;
     APIRET rc = os2_DosGetMachineMode(&mode32);
 
+    uint8_t check = (!host_mode) ? 0 : 1;
+    printf("[DOSCALLS 16-BIT] Dos16MachineMode called with return %i and mode %i where the host is working ? %i\n",rc,mode32,check);
+    fflush(stdout);
+
+    if (!host_mode) return 87;
+
     if (rc == NO_ERROR) {
         *host_mode = mode32;
+        printf("[DOSCALLS 16-BIT] Dos16MachineMode is: 0x%04X\n",*host_mode);
+        fflush(stdout);
     }
     return (uint16_t)rc;
 }
 
 uint16_t os2_Dos16SearchPath(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-
-    uint16_t flags       = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 14);
-    uint16_t pref_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 12);
-    uint16_t pref_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 10);
-    uint16_t name_sel    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t name_off    = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t buf_sel     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t buf_off     = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t cbBuf       = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    uint16_t flags       = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 14);
+    uint16_t pref_sel    = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 12);
+    uint16_t pref_off    = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 10);
+    uint16_t name_sel    = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 8);
+    uint16_t name_off    = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 6);
+    uint16_t buf_sel     = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 4);
+    uint16_t buf_off     = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 2);
+    uint16_t cbBuf       = *(uint16_t*)mode16to32(ctx->ss,  ctx->sp + 0);
 
     const char* host_ref  = (const char*)mode16to32(pref_sel, pref_off);
     const char* host_name = (const char*)mode16to32(name_sel, name_off);
@@ -210,31 +229,49 @@ uint16_t os2_Dos16SearchPath(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Dos16SetVec(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-
-    uint16_t vecNum   = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 8);
-    uint16_t hand_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    uint16_t hand_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    uint16_t prev_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    uint16_t prev_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    /* New Pascal Reading that should be placed to all other functions!*/
+    uint16_t prev_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
+    uint16_t prev_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t hand_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    uint16_t hand_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t vecNum   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
 
     printf("[DOSCALLS 16-BIT] Dos16SetVec Called:\n");
-    printf("  -> Interruption Vector: %d\n", vecNum);
+    printf("  -> Interruption Vector: %u (0x%02X)\n", vecNum, vecNum);
     printf("  -> New handler (R3): %04X:%04X\n", hand_sel, hand_off);
     printf("  -> Previous Return Pointer: %04X:%04X\n", prev_sel, prev_off);
     fflush(stdout);
 
-    void* host_prev = NULL;
-    if (prev_sel != 0 || prev_off != 0) {
-        host_prev = mode16to32(prev_sel, prev_off);
-    } else {
-        printf("[DOSCALLS 16-BIT] Previous handler is NULL. Blocked against random write\n");
-        fflush(stdout);
+    if (!virtual_idt || vecNum >= IDT_MAX_ENTRIES) {
+        return 87; /* ERROR_INVALID_PARAMETER */
     }
 
-    void* host_hand = mode16to32(hand_sel, hand_off);
+    /* Retiurn the 16-bit far pointer (Offset first, Selector later) */
+        if (prev_sel != 0 || prev_off != 0) {
+            uint16_t* host_prev = (uint16_t*)mode16to32(prev_sel, prev_off);
+            if (!host_prev) return 87;
 
-    APIRET rc = os2_DosSetVec((ULONG)vecNum, host_hand, host_prev);
-    return (uint16_t)rc;
+            host_prev[0] = virtual_idt[vecNum].offset;
+            host_prev[1] = virtual_idt[vecNum].selector;
+        } else {
+            printf("[DOSCALLS 16-BIT] Previous handler is NULL. Blocked against random write\n");
+            fflush(stdout);
+        }
+
+        /* Register the new 16-bit handler on shared virtual_idt */
+        if (hand_sel == 0 && hand_off == 0) {
+            virtual_idt[vecNum].selector = 0;
+            virtual_idt[vecNum].offset   = 0;
+            virtual_idt[vecNum].present  = 0;
+        } else {
+            virtual_idt[vecNum].selector = hand_sel;
+            virtual_idt[vecNum].offset   = hand_off;
+            virtual_idt[vecNum].present  = 1;
+            virtual_idt[vecNum].type     = IDT_TYPE_INTGATE;
+            virtual_idt[vecNum].dpl      = 3;
+        }
+
+        return 0; /* NO_ERROR */
 }
+
 
