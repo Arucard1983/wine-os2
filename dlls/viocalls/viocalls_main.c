@@ -49,12 +49,34 @@ APIRET CDECL os2_VioGetMode(PVIOMODEINFO pvioModeInfo, HVIO hvio) {
     return NO_ERROR;
 }
 
-APIRET CDECL os2_VioQueryFonts(PULONG pcbMetrics, PVIOFONTINFO pVioFontInfo, PVOID pData, ULONG cbData, PULONG pFontID, PSZ pszFontName, HVIO hvio) {
-    if (hvio != 0) return 1; /* ERROR_VIO_INVALID_HANDLE */
-    
-    /* Return 0 additional fonts to avoid subsystem crashes */
-    if (pcbMetrics) *pcbMetrics = 0;
-    
+APIRET CDECL os2_VioQueryFonts(PULONG plRemfonts, PVIOFONTCELLSIZE pMetrics, ULONG lMetricsLength, PULONG plFonts, PSZ pszFacename, ULONG flOptions, HVPS hvps) {
+    /* On AVIO, hvps can be a valid handle for != 0; for simple VIO, 0 is default */
+    if (hvps != 0) {
+        return ERROR_VIO_INVALID_HANDLE;
+    }
+
+    /* Case 1: Program is asking how many fonts exists (pMetrics == NULL ou *plFonts == 0) */
+    if (pMetrics == NULL || plFonts == NULL || *plFonts == 0 || lMetricsLength < sizeof(VIOFONTCELLSIZE)) {
+        if (plRemfonts) {
+            *plRemfonts = 1; /* Report a single standard font (8x16) */
+        }
+        if (plFonts) {
+            *plFonts = 0;    /* No standard font copied over */
+        }
+        return NO_ERROR;
+    }
+
+    /* Case 2: Program gets a buffer to receive the matrix cell size. */
+    pMetrics[0].cx = 8;   /* Largura da célula: 8 píxeis */
+    pMetrics[0].cy = 16;  /* Altura da célula: 16 píxeis */
+
+    if (plFonts) {
+        *plFonts = 1;     /* 1 struct filled */
+    }
+    if (plRemfonts) {
+        *plRemfonts = 0;  /* No more fonts to read */
+    }
+
     return NO_ERROR;
 }
 
@@ -63,7 +85,6 @@ APIRET CDECL os2_VioQueryFonts(PULONG pcbMetrics, PVIOFONTINFO pVioFontInfo, PVO
  * ========================================================================= */
 
 uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4; 
     uint16_t cbString;
     uint16_t pStr_sel;
     uint16_t pStr_off;
@@ -71,10 +92,10 @@ uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
     char* host_string;
     APIRET rc;
     
-    pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 6);
-    pStr_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    cbString  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    hvio_val  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    pStr_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    pStr_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    cbString  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    hvio_val  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     host_string = (char*)mode16to32(pStr_sel, pStr_off);
     if (!host_string) return 87; /* ERROR_INVALID_PARAMETER */
@@ -85,16 +106,15 @@ uint16_t os2_Vio16WrtTTY(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Vio16GetMode(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
     uint16_t pMode_sel, pMode_off;
     uint16_t hvio_val;
     void* host_struct;
     VIOMODEINFO mode32;
     APIRET rc;
 
-    pMode_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    pMode_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
-    hvio_val  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4); /* Pascal order */
+    pMode_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    pMode_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
+    hvio_val  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4); /* Pascal order */
 
     host_struct = mode16to32(pMode_sel, pMode_off);
     if (!host_struct) return 160; /* ERROR_VIO_INVALID_PARMS */
@@ -112,23 +132,48 @@ uint16_t os2_Vio16GetMode(CPU286_Context* ctx) {
 }
 
 uint16_t os2_Vio16QueryFonts(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4;
-    uint16_t pMetrics_sel, pMetrics_off;
-    uint32_t* host_metrics;
-    ULONG metrics32 = 0;
-
+   
     /* Using Pascal mapping, the first argument (pcbMetrics) is at higher offset */
     /* Total number of bytes by this calls = 22 bytes */
-    pMetrics_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 20);
-    pMetrics_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 18);
+    uint16_t plRemfonts_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 22);
+    uint16_t plRemfonts_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 24);
 
-    host_metrics = (uint32_t*)mode16to32(pMetrics_sel, pMetrics_off);
-    
-    /* Calling the 32-bit functionwith minimum effort */
-    APIRET rc = os2_VioQueryFonts(&metrics32, NULL, NULL, 0, NULL, NULL, 0);
-    
-    if (rc == NO_ERROR && host_metrics) {
-        *host_metrics = (uint32_t)metrics32;
+    uint16_t pMetrics_off   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 18);
+    uint16_t pMetrics_sel   = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 20);
+
+    uint32_t lMetricsLength = *(uint32_t*)mode16to32(ctx->ss, ctx->sp + 14);
+
+    uint16_t plFonts_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 10);
+    uint16_t plFonts_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 12);
+
+    uint16_t pszFace_off    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 6);
+    uint16_t pszFace_sel    = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 8);
+
+    uint32_t flOptions      = *(uint32_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    uint16_t hvps           = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
+
+
+    ULONG*            host_plRemfonts = plRemfonts_sel ? (ULONG*)mode16to32(plRemfonts_sel, plRemfonts_off) : NULL;
+    PVIOFONTCELLSIZE  host_pMetrics   = (pMetrics_sel && lMetricsLength > 0) ? (PVIOFONTCELLSIZE)mode16to32(pMetrics_sel, pMetrics_off) : NULL;
+    ULONG*            host_plFonts    = plFonts_sel ? (ULONG*)mode16to32(plFonts_sel, plFonts_off) : NULL;
+    PSZ               host_pszFace    = pszFace_sel ? (PSZ)mode16to32(pszFace_sel, pszFace_off) : NULL;
+
+    ULONG remFonts32 = 0;
+    ULONG numFonts32 = host_plFonts ? *host_plFonts : 0;
+
+    APIRET rc = os2_VioQueryFonts(
+        host_plRemfonts ? &remFonts32 : NULL,
+        host_pMetrics,
+        lMetricsLength,
+        host_plFonts ? &numFonts32 : NULL,
+        host_pszFace,
+        flOptions,
+        (HVPS)hvps
+    );
+
+    if (rc == NO_ERROR) {
+        if (host_plRemfonts) *host_plRemfonts = remFonts32;
+        if (host_plFonts)    *host_plFonts    = numFonts32;
     }
 
     return (uint16_t)rc;
@@ -162,8 +207,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         /* Ordinal 21 (Vio16GetMode): FarPtr(4) + USHORT(2) = 6 bytes */
         pfnRegister("VIOCALLS", 21, 6, os2_Vio16GetMode);
 
-        /* Ordinal 64 (Vio16QueryFonts): FarPtr(4)*4 + ULONG(4) + USHORT(2) = 22 bytes */
-        pfnRegister("VIOCALLS", 64, 22, os2_Vio16QueryFonts);
+        /* Ordinal 64 (Vio16QueryFonts): FarPtr(4)*4 + ULONG(4)*2 + USHORT(2) = 26 bytes */
+        pfnRegister("VIOCALLS", 64, 26, os2_Vio16QueryFonts);
 
         printf("[Viocalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
