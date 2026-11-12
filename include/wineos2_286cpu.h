@@ -3752,7 +3752,9 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             /* 0. Special Bypass to INT 7*/
             if (int_vector == 0x07) {
                 printf("[IDT WARNING] Math Co-Processor 287 cannot be overriden. Ignoring INT 7 custom code...\n");
-                break;
+                ctx->ip = next_instruction_ip;
+                ctx->rep_prefix = 0; ctx->seg_override = 0; ctx->lock_prefix = 0;
+                return;
             }
             
             /* 1. Check if the interruption was already registed (ex: internal hooks) */
