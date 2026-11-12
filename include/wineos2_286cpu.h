@@ -30,6 +30,18 @@ typedef struct {
     uint16_t (*wine_thunk)(CPU286_Context* ctx); 
 } OS2_LDT_ENTRY;
 
+/* 286 Interrupt Table (Protected Mode)*/
+typedef struct {
+    uint16_t selector;    /* Handler Selector (ex: Normally selected using DosSetVec) */
+    uint16_t offset;      /* Offset inside segment */
+    uint8_t  present;     /* 1 = Handler installer, 0 = Empty */
+    uint8_t  type;        /* IDT_TYPE_INTGATE or IDT_TYPE_TRAPGATE */
+    uint8_t  dpl;         /* Descriptor Privilege Level (Normally 3 for Ring 3) */
+
+    /* Bonus : Native thunk to direct INT xx call from host */
+    uint16_t (*wine_int_thunk)(CPU286_Context* ctx);
+} OS2_IDT_ENTRY;
+
 /* 80287 Structures */
 #pragma pack(push, 1)
 typedef struct {
@@ -46,6 +58,11 @@ typedef struct {
 
 /* Virtualized Local Descriptor Table (Maximum of 8192 selectors) */
 #define LDT_MAX_ENTRIES 8192
+#define IDT_MAX_ENTRIES 256
+#define IDT_TYPE_EMPTY     0
+#define IDT_TYPE_INTGATE   1
+#define IDT_TYPE_TRAPGATE  2
+#define IDT_TYPE_TASKGATE  3
 #define ZF_MASK 0x0040   /* Zero Flag bit 6 */
 #define SF_MASK 0x0080   /* Sign Flag bit 7 */
 #define CF_MASK 0x0001   /* Carry Flag bit 0 */
@@ -67,9 +84,11 @@ uint16_t wineos2_register_callgate(const char* mod_name, uint16_t ordinal, uint1
 #ifdef WINEOS2_DLL_MODULE
 /* Inside a dll, point to resolved pointer in runtime */
 extern OS2_LDT_ENTRY* virtual_ldt;
+extern OS2_IDT_ENTRY* virtual_idt;
 #else
 /* Inside the loader*/
 extern OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
+extern OS2_IDT_ENTRY virtual_idt[IDT_MAX_ENTRIES];
 #endif
 
 /* CPU State Context (Ring 3 execution only) */
@@ -411,13 +430,12 @@ static inline void cpu286_update_logical_flags16(CPU286_Context* ctx, uint32_t r
     ctx->flags &= ~OF_MASK; /* Logical ops clear Overflow */
 }
 
-extern void* os2_interrupt_vectors[256];
-
+/* To handle IDT table*/
 static inline void cpu286_trigger_protected_exception(CPU286_Context* ctx, uint8_t vector, uint16_t original_ip) {
-     void* handler_target = os2_interrupt_vectors[vector];
+    OS2_IDT_ENTRY* idt_entry = &virtual_idt[vector];
 
     printf("\n======================================================================\n");
-    printf("[ALFA WARNING] CPU Protected Mode Exception #%d (0x%02X) Triggered!\n", vector, vector);
+    printf("[WARNING] CPU Protected Mode Exception #%d (0x%02X) Triggered!\n", vector, vector);
     printf("======================================================================\n");
     printf("Faulting Instruction at -> CS:IP = 0x%04X:0x%04X\n", ctx->cs, original_ip);
     printf("Current CPU State:\n");
@@ -425,35 +443,45 @@ static inline void cpu286_trigger_protected_exception(CPU286_Context* ctx, uint8
     printf("  DS: 0x%04X  ES: 0x%04X  SS: 0x%04X  SP: 0x%04X\n", ctx->ds, ctx->es, ctx->ss, ctx->sp);
     printf("  BP: 0x%04X  SI: 0x%04X  DI: 0x%04X  FLAGS: 0x%04X\n", ctx->bp, ctx->si, ctx->di, ctx->flags);
     printf("======================================================================\n");
-    printf("[FATAL] Terminating program execution to prevent cascade corruption.\n");
 
-    if (!handler_target) {
-        printf("\n[CPU PROTECTED TRAP] Unhandled Hardware Exception #%02X at CS:IP = %04X:%04X\n",
-               vector, ctx->cs, original_ip);
-        exit(139);
+    if (idt_entry->present && idt_entry->wine_int_thunk) {
+        idt_entry->wine_int_thunk(ctx);
+        return;
     }
 
-    /* 1. Making IP backward to the begining of the failed opcode (The expected behaviour when an interruption is triggered) */
-    ctx->ip = original_ip;
+    switch(vector)
+    {
+        case 0x00: case 0x04: case 0x05: case 0x06: case 0x10: /* handles the accepted hardware interruptions */
+        {
+         if(idt_entry->present){
+          /* 1. Making IP backward to the begining of the failed opcode (The expected behaviour when an interruption is triggered) */
+          ctx->ip = original_ip;
 
-    /* 2. Place the Status on 16-bit Protected Mode */
-    cpu286_push16(ctx, ctx->flags);
-    cpu286_push16(ctx, ctx->cs);
-    cpu286_push16(ctx, ctx->ip);
+          /* 2. Place the Status on 16-bit Protected Mode */
+          cpu286_push16(ctx, ctx->flags);
+          cpu286_push16(ctx, ctx->cs);
+          cpu286_push16(ctx, ctx->ip);
 
-    /* 3.  Clean CPU control flags  (like if Trap Flag did exist) */
-    ctx->flags &= ~0x0100;
+          /* 3.  Clean CPU control flags  (like if Trap Flag did exist) */
+          ctx->flags &= ~0x0100;
 
-    /* 4. Transfer to the register defined by Seletor:Offset using OS/2 with DosSetVec */
-    uint16_t target_selector = 0;
-    uint16_t target_offset = 0;
-    if (mode32to16(handler_target, &target_selector, &target_offset)) {
-        ctx->cs = target_selector;
-        ctx->ip = target_offset;
-    } else {
-        printf("[CRITICAL] Failed to map OS/2 exception handler to 16-bit space.\n");
-        exit(139);
+          /* 4. Transfer to the register defined by Seletor:Offset using OS/2 with DosSetVec */
+          ctx->cs = idt_entry->selector;
+          ctx->ip = idt_entry->offset;
+          printf("[IDT DEBUG] New INT %u registed...\n",vector);
+          return;
+         }
+         break;
+        }
+        case 0x07:
+         printf("[IDT WARNING] Math Co-Processor 287 cannot be overriden. Ignoring INT 7 custom code...\n"); return;
+        default:
+         break;
     }
+    /* When the table fails, it triggers the fatal error and exit*/
+    printf("[OS/2 KERNEL TRAP] Illegal Fatal Exception #0x%02X at CS:IP = %04X:%04X. Terminating.\n",
+           vector, ctx->cs, original_ip);
+    exit(139);
 }
 
 
@@ -1935,17 +1963,16 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     memcpy(&target_offset, args_ptr + 0, 2);
                     memcpy(&target_selector, args_ptr + 2, 2);
 
-                    /* Now apply the four bytes jump to argument position */
-                    uint8_t* local_args = args_ptr + 4;
+                    /* protected mode mask*/
+                    uint16_t ldt_index = target_selector >> 3;
+                    target_selector = (ldt_index << 3) | 3;
 
                     /* Intel Golden Rule: Call Far for a Null Selector makes #GP(0) */
-                    if ((target_selector >> 3) == 0) {
+                    if (ldt_index == 0) {
                         printf("[CPU TRAP] #GP(0): Fatal Null Segment Selector Far Call at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip);
                         cpu286_trigger_protected_exception(ctx, 0x0D, ctx->ip);
                         return;
                     }
-
-                    uint16_t ldt_index = target_selector >> 3;
 
                     /* Present Segment Validation - JUmp tpo Protected Exception #GP(Selector) */
                     if (ldt_index >= LDT_MAX_ENTRIES || !virtual_ldt[ldt_index].present) {
@@ -1964,11 +1991,11 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         fflush(stdout);
 
                         if (virtual_ldt[ldt_index].wine_thunk) {
-                            /* Evaluate the IP of next instruction for which the API shpould return */
-                            uint16_t next_instruction_ip = ctx->ip + 1 + (uint16_t)(local_args - args_ptr);
+                            /* Evaluate the IP of next instruction for which the API should return */
+                            uint16_t next_instruction_ip = ctx->ip + 5;
 
                             /* Safe native host Thunk call */
-                            uint16_t api_result = virtual_ldt[ldt_index].wine_thunk(ctx);
+                            uint16_t api_result = ((uint16_t(*)(CPU286_Context*))virtual_ldt[ldt_index].wine_thunk)(ctx);
                             ctx->ax = api_result;
 
                             /* OS/2 Error convention: Sucess clear Carry, Error activate Carry */
@@ -1995,7 +2022,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                             ctx->flags |= CF_MASK;
 
                             /* Jumping IP to ignore Unimplemented CallGate */
-                            ctx->ip = ctx->ip + 1 + (uint16_t)(local_args - args_ptr);
+                            ctx->ip = ctx->ip + 5;
                             break;
                         }
                     }
@@ -2004,7 +2031,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                      * ========================================================================= */
                     else {
                         /* Return IP stored of stack SHOULD be next instruction */
-                        uint16_t next_instruction_ip = ctx->ip + 1 + (uint16_t)(local_args - args_ptr);
+                        uint16_t next_instruction_ip = ctx->ip + 5;
 
                         /* Stack the return coordinates */
                         cpu286_push16(ctx, ctx->cs);
@@ -2900,7 +2927,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
                 /* =========================================================================
-                 * GRP I/O DIRECT: (IN/OUT DIRECT) - REVISADO ATÓMICO E PRIVILEGIAÇÃO
+                 * GRP I/O DIRECT: (IN/OUT DIRECT)
                  * ========================================================================= */
                 case 0xE4:   /* IN AL, ib - Input Byte from Immediate Port */
                 case 0xE5: { /* IN AX, iw - Input Word from Immediate Port */
@@ -2919,7 +2946,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         ctx->ax = 0xFFFF;
                     }
 
-                    /* Instrução estática de 2 bytes: 1 byte (opcode) + 1 byte (port_imm) */
+                    /* Static Instruction with 2 bytes: 1 byte (opcode) + 1 byte (port_imm) */
                     ctx->ip += 2;
                     break;
                 }
@@ -3719,15 +3746,40 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
         case 0xCD: {  /* INT ib */
             uint8_t int_vector = *args_ptr;
-            if (int_vector == 0x21) {
-                printf("[API HOOK] INT 21h triggered. AX=%04X\n", ctx->ax);
+            uint16_t next_instruction_ip = ctx->ip + 2;
+            OS2_IDT_ENTRY* idt_entry = &virtual_idt[int_vector];
+
+            /* 1. Check if the interruption was already registed (ex: internal hooks) */
+            if (idt_entry->present && idt_entry->wine_int_thunk) {
+                ctx->ip = next_instruction_ip;
+                idt_entry->wine_int_thunk(ctx);
+                ctx->rep_prefix = 0; ctx->seg_override = 0; ctx->lock_prefix = 0;
+                return;
             }
 
-            /* INT ib is a static 2 bytes operand (1 byte opcode + 1 byte vetor)
-             *               Note: If INT was used under a virtual environment, it would trigger an interrupt handler,
-             *               and IP would be afjusted internally. For Ring 3 environments, it is skipped. */
-            ctx->ip += 2;
-            break;
+            /* 2. Check if the OS/2 program was installed an handler using DosSetVec (DPL == 3) */
+            if (idt_entry->present && idt_entry->dpl == 3) {
+                /* Stack FLAGS, CS and IP of NEXT instruction (INT ib main rule) */
+                cpu286_push16(ctx, ctx->flags);
+                cpu286_push16(ctx, ctx->cs);
+                cpu286_push16(ctx, next_instruction_ip);
+
+                /* Clear Trap Flag (TF) and Interrupt Flag (IF) due to 286 specs */
+                ctx->flags &= ~0x0300;
+
+                /* Pass the control to user handler */
+                ctx->cs = idt_entry->selector;
+                ctx->ip = idt_entry->offset;
+
+                ctx->rep_prefix = 0; ctx->seg_override = 0; ctx->lock_prefix = 0;
+                return;
+            }
+
+            /* 3. Any other call (ex: INT 21h DOS or INT 10h BIOS) under OS/2 Protected Mode */
+            printf("[CPU TRAP] #GP(0): Illegal Software Interrupt INT 0x%02X in Protected Mode at CS:IP = %04X:%04X\n",
+                   int_vector, ctx->cs, instruction_start_ip);
+            cpu286_trigger_protected_exception(ctx, 0x0D, instruction_start_ip);
+            return;
         }
 
         case 0xCE: { /* INTO - Interrupt on Overflow */
@@ -4250,11 +4302,56 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                     memcpy(&target_selector, (uint8_t*)far_ptr_mem + 2, 2);
 
                     uint16_t next_ip = ctx->ip + 1 + (uint16_t)(local_args - args_ptr);
-                    cpu286_push16(ctx, ctx->cs);
-                    cpu286_push16(ctx, next_ip);
+                    uint16_t ldt_index = target_selector >> 3;
+                    target_selector = (ldt_index << 3) | 3;
 
-                    ctx->ip = target_offset;
-                    ctx->cs = target_selector;
+                    /* Null Selector Protection */
+                    if (ldt_index == 0) {
+                        printf("[CPU TRAP] #GP(0): Fatal Null Segment Selector Far Call at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip);
+                        cpu286_trigger_protected_exception(ctx, 0x0D, ctx->ip);
+                        return;
+                    }
+
+                    /* Segment Validation */
+                    if (ldt_index >= LDT_MAX_ENTRIES || !virtual_ldt[ldt_index].present) {
+                        printf("[CPU TRAP] #GP(0x%04X): Far Call Selector invalid or not present at CS:IP = %04X:%04X\n",
+                               target_selector, ctx->cs, ctx->ip);
+                        cpu286_trigger_protected_exception(ctx, 0x0D, ctx->ip);
+                        return;
+                    }
+
+                    /* Callgate Interception (Native OS/2 API) */
+                    if (virtual_ldt[ldt_index].type == LDT_TYPE_CALLGATE) {
+                        printf("[API TRACE] Far Call intercepted to CallGate Selector: 0x%04X | %s Ordinal: %u\n",
+                               target_selector, virtual_ldt[ldt_index].mod_name, virtual_ldt[ldt_index].limit);
+                        fflush(stdout);
+
+                        if (virtual_ldt[ldt_index].wine_thunk) {
+                            uint16_t api_result = ((uint16_t(*)(CPU286_Context*))virtual_ldt[ldt_index].wine_thunk)(ctx);
+                            ctx->ax = api_result;
+
+                            if (api_result == 0) {
+                                ctx->flags &= ~CF_MASK;
+                            } else {
+                                ctx->flags |= CF_MASK;
+                            }
+
+                            ctx->ip = next_ip;
+                            ctx->sp += virtual_ldt[ldt_index].param_bytes;
+                        } else {
+                            printf("[API TRACE WARNING] Unimplemented OS/2 CallGate: Selector 0x%04X\n", target_selector);
+                            ctx->ax = 182; /* ERROR_INVALID_STARTING_CODESEG */
+                            ctx->flags |= CF_MASK;
+                            ctx->ip = next_ip;
+                        }
+                    }
+                    /* Internal Subrotines */
+                    else {
+                        cpu286_push16(ctx, ctx->cs);
+                        cpu286_push16(ctx, next_ip);
+                        ctx->cs = target_selector;
+                        ctx->ip = target_offset;
+                    }
                     ctx->rep_prefix = 0; ctx->seg_override = 0; ctx->lock_prefix = 0;
                     return;
                 }
@@ -5058,21 +5155,33 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                             }
 
                             case 0x3B: { /* CMP Gv, Ev */
-                                uint8_t modrm = args_ptr;
+                                uint8_t modrm = *args_ptr;
                                 uint8_t *local_args = args_ptr + 1;
-                                uint16_t dest = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
-                                uint16_t src = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg16(ctx, modrm & 0x07) : (uint16_t)cpu286_decode_modrm(ctx, modrm, &local_args);
-                                if (dest && src) {
-                                    uint16_t dest_val, src_val;
-                                    memcpy(&dest_val, dest, 2);
-                                    memcpy(&src_val, src, 2);
-                                    uint32_t res = (uint32_t)dest_val - src_val;
-                                    cpu286_update_flags16(ctx, res);
-                                    if (dest_val < src_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
+                                uint16_t dest_val = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+                                uint16_t src_val;
+
+                                if (((modrm >> 6) & 0x03) == 3) {
+                                    src_val = cpu286_get_reg16(ctx, modrm & 0x07);
+                                } else {
+                                    void *src_addr = (void *)cpu286_decode_modrm(ctx, modrm, &local_args);
+                                    if (!src_addr) {
+                                        break;
                                     }
-                                    ctx->ip = ctx->ip + 1 + (uint16_t)(local_args - args_ptr);
-                                    break;
+                                    memcpy(&src_val, src_addr, 2);
+                                }
+
+                                uint32_t res = (uint32_t)dest_val - (uint32_t)src_val;
+                                cpu286_update_flags16(ctx, res);
+                                if (dest_val < src_val) {
+                                    ctx->flags |= CF_MASK;
+                                } else {
+                                    ctx->flags &= ~CF_MASK;
+                                }
+
+                                ctx->ip = ctx->ip + 1 + (uint16_t)(local_args - args_ptr);
+                                break;
                             }
+
 
                             case 0x05: { /* ADD AX, iw */
                                 uint16_t imm16 = 0;

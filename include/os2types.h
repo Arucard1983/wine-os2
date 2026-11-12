@@ -6,32 +6,41 @@
 #ifndef __WINE_OS2TYPES_H
 #define __WINE_OS2TYPES_H
 
+#include <stdint.h>
+
 /* 1. BASE INTEGER TYPES */
-typedef unsigned char  UCHAR;   /* 8 bits */
+typedef uint8_t        UCHAR;   /* 8 bits */
 typedef char           CHAR;    /* 8 bits */
-typedef unsigned char  BYTE;    /* 8 bits */
-typedef unsigned short USHORT;  /* 16 bits */
-typedef unsigned long  ULONG;   /* 32 bits */
+typedef uint8_t        BYTE;    /* 8 bits */
+typedef uint16_t       USHORT;  /* 16 bits */
+typedef int16_t        SHORT;   /* 16 bits (for APIs PM/VIO) */
 
 /* 2. RETURN CODES AND HANDLES */
 typedef ULONG          APIRET;   /* Native 32-bit (LX) return code */
 typedef USHORT         APIRET16; /* Native 16-bit (NE) return code */
 typedef ULONG          HVIO;     /* VIO handle (0 = Default) */
+typedef HVIO           *PHVIO;   /* VIO Pointer */
+typedef USHORT         HVPS;     /* AVIO Presentation Space handle (16 bits) */
+typedef HVPS           *PHVPS;   /* AVIO Pointer */
 typedef ULONG          HKBD;     /* KBD handle */
 typedef ULONG          HMOU;     /* MOU handle */
+
 
 /* Fix: Protected against duplicate definitions from windows.h / winerror.h */
 #ifndef NO_ERROR
 #define NO_ERROR       0L
 #endif
 
-#define ERROR_VIO_INVALID_HANDLE    421L
+#define ERROR_VIO_INVALID_PARAMS   421L
+#define ERROR_VIO_INVALID_HANDLE   436L
 
 /* 3. FLAT POINTERS (Emulator performs Map16to32 into these types) */
 typedef void          *PVOID;
 typedef CHAR          *PCH;
 typedef CHAR          *PCHAR;
 typedef char          *PSZ;
+typedef uint32_t OS2_SEGPTR;   /* Pointer of 16:16 (offset on lower 16 bits, seletor on higher 16 bits) */
+typedef uint32_t OS2_FLATPTR32;/* Pointer of 32 bits (LX) */
 
 #pragma pack(push, 1)
 
@@ -64,6 +73,17 @@ typedef struct _VIOFONTINFO {
     PVOID  pFontData;
     USHORT cBytes;
 } VIOFONTINFO, *PVIOFONTINFO;
+
+/* Flags for VioQueryFonts (flOptions) */
+#define VQF_PUBLIC  0x0001L
+#define VQF_PRIVATE 0x0002L
+
+/* Struct for MAtrix Cell Sixe (used by VioQueryFonts and VioSetDeviceCellSize) */
+typedef struct _VIOFONTCELLSIZE {
+    LONG cx; /* lenght of cell in pixels */
+    LONG cy; /* height of cell in pixels */
+} VIOFONTCELLSIZE, *PVIOFONTCELLSIZE;
+
 
 /* 5. KEYBOARD (KBD) STRUCTURES */
 typedef struct _KBDKEYINFO {
