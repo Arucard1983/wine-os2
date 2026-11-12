@@ -64,7 +64,6 @@ uint16_t os2_Mou16GetNumButtons(CPU286_Context* ctx) {
      * [SS:SP + 2] -> Offset of Far Pointer (pResult)
      * [SS:SP + 0] -> Handle og Rato (hmou)
      */
-    uint16_t sp_offset = ctx->sp + 4; 
     uint16_t pResult_sel;
     uint16_t pResult_off;
     uint16_t hmou;
@@ -72,9 +71,9 @@ uint16_t os2_Mou16GetNumButtons(CPU286_Context* ctx) {
     APIRET rc;
 
     /* Extract the parameters from the emulated stack */
-    pResult_sel = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    pResult_off = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    hmou        = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    pResult_sel = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    pResult_off = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    hmou        = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     /* Convert the segment stack to a linear space of 32-bits */
     host_ptr = mode16to32(pResult_sel, pResult_off);
@@ -92,16 +91,15 @@ uint16_t os2_Mou16GetNumButtons(CPU286_Context* ctx) {
 
 
 uint16_t os2_Mou16GetPtrPos(CPU286_Context* ctx) {
-    uint16_t sp_offset = ctx->sp + 4; 
     uint16_t pPos_sel;
     uint16_t pPos_off;
     uint16_t hmou;
     void* host_pos;
     APIRET rc;
     
-    pPos_sel  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 4);
-    pPos_off  = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 2);
-    hmou      = *(uint16_t*)mode16to32(ctx->ss, sp_offset + 0);
+    pPos_sel  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 4);
+    pPos_off  = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 2);
+    hmou      = *(uint16_t*)mode16to32(ctx->ss, ctx->sp + 0);
 
     host_pos = mode16to32(pPos_sel, pPos_off);
     if (!host_pos) return 87;
