@@ -1,0 +1,45 @@
+MODULE    = rexx.exe
+IMPORTS   = kernel32 user32 advapi32 ws2_32
+
+ENABLE_ARCHS = i386
+
+EXTRADLLFLAGS = -mconsole -UWINE_NO_UNICODE_MACROS -DWIN32 -D_WIN32 -D__WIN32__ -D__W32__ -D__MINGW32__ -DHAVE_CONFIGUR_H -DREXXSAA -DREGINA_MULTI_THREADED -DREGINA_STATIC -UHAVE_GCI
+
+SOURCES = \
+	LibSha1.c \
+	builtin.c \
+	config.h \
+	convert.c \
+	dbgfuncs.c \
+	debug.c \
+	envir.c \
+	error.c \
+	expr.c \
+	extstack.c \
+	files.c \
+	funcs.c \
+	instore.c \
+	interprt.c \
+	lexsrc.c \
+	library.c \
+	macros.c \
+	memory.c \
+	misc.c \
+	mt_win32.c \
+	mygetopt.c \
+	options.c \
+	os2funcs.c \
+	os_win.c \
+	parsing.c \
+	rexx.c \
+	rexxbif.c \
+	rexxsaa.c \
+	shell.c \
+	signals.c \
+	stack.c \
+	strengs.c \
+	strmath.c \
+	tracing.c \
+	variable.c \
+	wrappers.c \
+	yaccsrc.c
