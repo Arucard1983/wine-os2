@@ -1,1 +1,14 @@
-a
+MODULE    = rxstack.exe
+IMPORTS   = kernel32
+
+ENABLE_ARCHS = i386
+
+EXTRADEFS     = -UWINE_NO_UNICODE_MACROS -DRX_SWITCH="\"-s\""
+EXTRADLLFLAGS = -mconsole
+
+C_SRCS = \
+	rxwrapper.c
+
+
+SOURCES = \
+	rxwrapper.c
