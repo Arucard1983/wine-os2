@@ -810,6 +810,24 @@ int main(int argc,char *argv[])
 
    if ( argv0 == NULL )
       argv0 = GetArgv0( argv[0] );
+   
+   /* External modules */
+   extern int rxqueue_main(int argc, char *argv[]);
+   extern int rxstack_main(int argc, char *argv[]);
+   
+   if ( argc > 1 )
+   {
+    if ( strcmp( argv[1], "-q" ) == 0 )
+    {
+      argv[1] = "rxqueue";
+      return rxqueue_main( argc - 1, argv + 1 );
+    }
+    if ( strcmp( argv[1], "-s" ) == 0 )
+    {
+      argv[1] = "rxstack";
+      return rxstack_main( argc - 1, argv + 1 );
+    }
+   }
 
    TSD = GLOBAL_ENTRY_POINT();
 
@@ -1191,6 +1209,8 @@ static void usage( char *argv0 )
    fprintf( stdout,"  --options=OPTIONS, -oOPTIONS    specify OPTIONS in same format as OPTIONS instruction\n");
    fprintf( stdout,"  --compile, -c                   see \"To tokenise a Rexx program:\" below\n");
    fprintf( stdout,"  --execute, -e                   see \"To execute a tokenised file:\" below\n");
+   fprintf( stdout,"  --rxqueue, -q                   Handle queues.\n");
+   fprintf( stdout,"  --rxstack, -s                   Handle the stack daemon.\n");
    fprintf( stdout,"\"program\" is the file containing Rexx code to execute\n");
    fprintf( stdout,"\"arguments\" are arguments passed to program\n");
    fprintf( stdout,"\nTo tokenise a Rexx program:\n" );

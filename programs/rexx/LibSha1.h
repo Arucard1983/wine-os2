@@ -11,11 +11,11 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <stdint.h>
-#ifdef HAVE_CONFIG_H
-# include "config.h"
-#else
-# include "configur.h"
-#endif
+//#ifdef HAVE_CONFIG_H
+//# include "config.h"
+//#else
+#include "configur.h"
+//#endif
 
 #ifndef _LibSha1_h_
 #define _LibSha1_h_

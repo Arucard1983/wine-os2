@@ -27,9 +27,9 @@
 #include "rexxsaa.h"
 #define DONT_TYPEDEF_PFN
 
-#ifdef HAVE_GCI
+//#ifdef HAVE_GCI
 /*# include "gci/gci.h"*/
-#endif
+//#endif
 
 #include "rexx.h"
 #include "rxiface.h"

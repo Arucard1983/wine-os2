@@ -24,11 +24,11 @@
    along with this program; if not, write to the Free Software
    Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.  */
 
-#if defined(HAVE_CONFIG_H)
-# include "config.h"
-#else
-# include "configur.h"
-#endif
+//#if defined(HAVE_CONFIG_H)
+//# include "config.h"
+//#else
+#include "configur.h"
+//#endif
 
 #if !__STDC__ && !defined(const) && IN_GCC
 #define const

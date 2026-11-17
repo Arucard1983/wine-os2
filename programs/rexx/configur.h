@@ -62,6 +62,7 @@
 #define HAVE_FTRUNCATE 1
 #define HAVE_GETCWD 1
 #define HAVE__FULLPATH 1
+#define HAVE_FTIME 1
 
 /* Disable redundant Unix/POSIX types */
 #undef HAVE_UNISTD_H
@@ -75,7 +76,6 @@
 
 /* Fundamental Types */
 #define RETSIGTYPE void
-#define TIME_WITH_SYS_TIME 1
 #define YY_CHAR_TYPE unsigned char
 #define REGINA_STATIC 1
 #define MAX_EXPONENT 999999999
@@ -96,7 +96,7 @@
 #endif
 #define access _access
 
-/* Macros cruciais e limpas de ambiente e sistema */
+/* Fundamental macros */
 #define ftruncate _chsize
 #ifndef S_ISCHR
 #define S_ISCHR(m) (((m) & 0xF000) == 0x2000)
@@ -109,13 +109,14 @@
 #define TRC_STATIC 1
 #endif
 
-/* Identificadores do Motor */
-#define REGINA_ENGINE 1
-#define IS_REGINA_ENGINE 1
-#define _TIMEVAL_DEFINED 1
-#define _STRUCT_TIMEVAL 1
+/* Regina Metadata */
+#ifndef EXTERNAL_TO_REGINA
+# define REGINA_ENGINE 1
+# define IS_REGINA_ENGINE 1
+#endif
 
-/* Purgar extensões não utilizadas no OS/2 */
+
+/* Removing unused features on OS/2 */
 #undef SUBVERSION
 #define DEFAULT_AREXX_BIFS 0
 #undef HAVE_AREXX_EXTENSIONS
@@ -152,9 +153,7 @@
 #define NO_REGINA_BALLOCS 1
 #define MONOLITHIC 1
 
-#ifndef DEFAULT_SINGLE_INTERPRETER
-#define DEFAULT_SINGLE_INTERPRETER 1
-#endif
+
 
 #endif /* REGINA_CONFIG_H_INCLUDED */
 

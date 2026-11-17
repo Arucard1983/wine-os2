@@ -118,9 +118,9 @@
 #define MAX_CONCURRENT_REGINA_THREADS 1000
 
 #include "defs.h"
-#if defined(HAVE_CONFIG_H)
-# include "config.h"
-#endif
+//#if defined(HAVE_CONFIG_H)
+//# include "config.h"
+//#endif
 #include "configur.h"
 
 #ifdef HAVE_LIMITS_H

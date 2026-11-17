@@ -8,7 +8,6 @@ EXTRADLLFLAGS = -mconsole -UWINE_NO_UNICODE_MACROS -DWIN32 -D_WIN32 -D__WIN32__ 
 SOURCES = \
 	LibSha1.c \
 	builtin.c \
-	config.h \
 	convert.c \
 	dbgfuncs.c \
 	debug.c \
@@ -34,6 +33,8 @@ SOURCES = \
 	rexx.c \
 	rexxbif.c \
 	rexxsaa.c \
+	rxqueue.c \
+	rxstack.c \
 	shell.c \
 	signals.c \
 	stack.c \

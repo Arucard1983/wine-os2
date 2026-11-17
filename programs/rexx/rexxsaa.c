@@ -111,9 +111,9 @@
 
 #include "regina_c.h"
 
-#ifdef HAVE_CONFIG_H
-# include "config.h"
-#endif
+//#ifdef HAVE_CONFIG_H
+//# include "config.h"
+//#endif
 
 /*
  * The rexxsaa.h header file defines the interface between this file and

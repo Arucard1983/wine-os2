@@ -19,11 +19,11 @@
 #ifndef _REXXBIF_H_INCLUDED
 #define _REXXBIF_H_INCLUDED
 
-#if defined(HAVE_CONFIG_H)
-# include "config.h"
-#else
-# include "configur.h"
-#endif
+//#if defined(HAVE_CONFIG_H)
+//# include "config.h"
+//#else
+#include "configur.h"
+//#endif
 
 #include <stdlib.h>
 #include <stdio.h>
