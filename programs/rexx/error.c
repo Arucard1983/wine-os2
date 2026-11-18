@@ -693,10 +693,10 @@ void exiterror( int errorno, int suberrorno, ... )
 
    et->conditions++;
    if ( TSD == NULL || TSD->systeminfo == NULL )
-{
-   fprintf(stderr, "Regina REXX Panic: Error %d occured before TSD initialization.\n", errorno);
-   exit(errorno);
-}
+   {
+    fprintf(stderr, "Regina REXX Panic: Error %d occured before TSD initialization.\n", errorno);
+    exit(errorno);
+   }
    if ( ( inputfile = TSD->systeminfo->input_file ) == NULL )
       inputfile = (streng *) nofile;
    ok = HOOK_GO_ON;

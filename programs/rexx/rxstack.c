@@ -130,9 +130,13 @@
 
 #define NO_CTYPE_REPLACEMENT
 #define EXTERNAL_TO_REGINA 1
+#define TEXT(x) x
+#define _tprintf printf
+#define _stprintf sprintf
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>
+#include <winsvc.h>
 #include "rexx.h"
 
 static streng *MakeStreng( int size )
@@ -242,14 +246,14 @@ static void DropStreng( streng *ptr )
 #endif
 #include "LibSha1.h"
 
-//#ifdef BUILD_NT_SERVICE
-//# include "service.h"
+#ifdef BUILD_NT_SERVICE
+# include "service.h"
 /*
  * this event is signalled when the
  * service should end
  */
-//HANDLE  hServerStopEvent = NULL;
-//#endif
+HANDLE  hServerStopEvent = NULL;
+#endif
 
 #ifdef WIN32
 # define os_errno ((int)WSAGetLastError())
@@ -462,6 +466,7 @@ typedef struct _Client
  */
 Client *clients;
 
+static int running_as_service = 0;
 int running = 1;
 int allclean = 0;
 time_t base_secs; /* the time the process started */
@@ -1015,7 +1020,7 @@ int nt_service_start( void )
     * create the event object. The control handler function signals
     * this event when it receives the "stop" control code.
     */
-   hServerStopEvent = CreateEvent(
+   hServerStopEvent = CreateEventA(
         NULL,    /* no security attributes */
         TRUE,    /* manual reset event */
         FALSE,   /* not-signalled */
@@ -2964,7 +2969,7 @@ int rxstack_doit( )
 #endif
 
 #ifdef BUILD_NT_SERVICE
-   if ( IsItNT()
+   if ( running_as_service && IsItNT()
    &&   !report_service_pending_start() )
       goto notrunning;
 #endif
@@ -3007,7 +3012,7 @@ int rxstack_doit( )
 #endif
 
 #ifdef BUILD_NT_SERVICE
-   if ( IsItNT()
+   if ( running_as_service && IsItNT()
    &&   !report_service_pending_start() )
       goto notrunning;
 #endif
@@ -3032,7 +3037,7 @@ int rxstack_doit( )
    server.sin_port = htons((unsigned short) portno);
 
 #ifdef BUILD_NT_SERVICE
-   if ( IsItNT()
+   if ( running_as_service && IsItNT()
    &&   !report_service_pending_start() )
       goto notrunning;
 #endif
@@ -3048,7 +3053,7 @@ int rxstack_doit( )
    }
 #ifdef BUILD_NT_SERVICE
    sprintf(buf, "Listening on port: %ld", portno );
-   if ( IsItNT() )
+   if ( running_as_service && IsItNT() )
    {
       if ( !report_service_start() )
          goto notrunning;
@@ -3375,31 +3380,24 @@ int runNormal( int argc, char **argv )
    return rc;
 }
 
-//#ifdef BUILD_NT_SERVICE
-//VOID ServiceStart(DWORD argc, LPTSTR *argv)
-//#else
 int rxstack_main(int argc, char *argv[])
-//#endif
 {
-//#ifdef BUILD_NT_SERVICE
-//   if ( IsItNT() )
-//   {
-//      if ( !nt_service_start() )
-//      {
-/*
-         checkDebug();
-         rxstack_doit();
-*/
-//         runNormal(argc, argv);
-//      }
-//      rxstack_cleanup();
-//      return;
-//   }
-//   else
-//   {
-//      runNormal(argc, argv);
-//   }
-//#else
    return runNormal( argc, argv );
-//#endif
+}
+
+VOID ServiceStart(DWORD argc, LPSTR *argv)
+{
+   running_as_service = 1;
+   if ( running_as_service && IsItNT() )
+   {
+      if ( !nt_service_start() )
+      {
+         runNormal( (int)argc, argv );
+      }
+      rxstack_cleanup();
+   }
+   else
+   {
+      runNormal( (int)argc, argv );
+   }
 }

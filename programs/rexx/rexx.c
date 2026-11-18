@@ -814,6 +814,7 @@ int main(int argc,char *argv[])
    /* External modules */
    extern int rxqueue_main(int argc, char *argv[]);
    extern int rxstack_main(int argc, char *argv[]);
+   extern void rxstack_service_main(int argc, char **argv);
    
    if ( argc > 1 )
    {
@@ -824,9 +825,20 @@ int main(int argc,char *argv[])
     }
     if ( strcmp( argv[1], "-s" ) == 0 )
     {
-      argv[1] = "rxstack";
-      return rxstack_main( argc - 1, argv + 1 );
+     argv[1] = "rxstack";
+     if ( argc > 2 && ( _stricmp( argv[2], "-install" ) == 0 ||
+                      _stricmp( argv[2], "-start" ) == 0   ||
+                      _stricmp( argv[2], "-remove" ) == 0  ||
+                      _stricmp( argv[2], "-stop" ) == 0    ||
+                      _stricmp( argv[2], "-k" ) == 0       ||
+                      _stricmp( argv[2], "-service" ) == 0 ) )
+        {
+        rxstack_service_main( argc - 1, argv + 1 );
+        return 0;
+     }
+     return rxstack_main( argc - 1, argv + 1 );
     }
+
    }
 
    TSD = GLOBAL_ENTRY_POINT();
@@ -1099,90 +1111,90 @@ const tsd_t *getGlobalTSD( void )
    return __regina_global_TSD;
 }
 
-#if !defined(RXLIB) && !defined(VMS)
-
-static void NoAPI( void )
-{
-   fprintf (stderr, "Warning: SAA API not compiled into interpreter\n" ) ;
-}
-
-int hookup( tsd_t *TSD, int dummy )
-{
-   /* This should never happen, if we don't have support for SAA API,
-    * Then we should never get a system exit!
-    */
-   assert( 0 ) ;
-   return 1 ;  /* to keep compiler happy */
-}
-int hookup_input( tsd_t *TSD, int dummy1, streng **dummy2 )
-{
-   /* This should never happen, if we don't have support for SAA API,
-    * Then we should never get a system exit!
-    */
-   assert( 0 ) ;
-   return 1 ;  /* to keep compiler happy */
-}
-int hookup_input_output( tsd_t *TSD, int dummy1, const streng *dummy2, streng **dummy3 )
-{
-   /* This should never happen, if we don't have support for SAA API,
-    * Then we should never get a system exit!
-    */
-   assert( 0 ) ;
-   return 1 ;  /* to keep compiler happy */
-}
-int hookup_output( tsd_t *TSD, int dummy1, const streng *dummy2 )
-{
-   /* This should never happen, if we don't have support for SAA API,
-    * Then we should never get a system exit!
-    */
-   assert( 0 ) ;
-   return 1 ;  /* to keep compiler happy */
-}
-int hookup_output2( tsd_t *TSD, int dummy1, const streng *dummy2, const streng *dummy3 )
-{
-   /* This should never happen, if we don't have support for SAA API,
-    * Then we should never get a system exit!
-    */
-   assert( 0 ) ;
-   return 1 ;  /* to keep compiler happy */
-}
-
-static void Exit( const tsd_t *TSD )
-{
-   /*
-    * cheat about the const, we go away anyway :-)
-    */
-   jump_interpreter_exit( ( tsd_t * ) TSD, 1 );
-}
-
-streng *call_unknown_external( tsd_t *TSD, const streng *dummy1, cparamboxptr dummy2, char dummy3 )
-{
-   NoAPI();
-   Exit( TSD ) ;
-   return NULL;
-}
-
-streng *call_known_external( tsd_t *TSD, const struct entry_point *dummy1, cparamboxptr dummy2, char dummy3 )
-{
-   NoAPI();
-   Exit( TSD ) ;
-   return NULL;
-}
-
-
-streng *SubCom( tsd_t *TSD, const streng *dummy1, const streng *dummy2, int *dummy3 )
-{
-   NoAPI();
-   Exit( TSD ) ;
-   return NULL;
-}
-
-//int IfcHaveFunctionExit(const tsd_t *TSD)
-//{
-//   return(0);
-//}
-
-#endif
+// #if !defined(RXLIB) && !defined(VMS)
+//
+// static void NoAPI( void )
+// {
+//    fprintf (stderr, "Warning: SAA API not compiled into interpreter\n" ) ;
+// }
+//
+// int hookup( tsd_t *TSD, int dummy )
+// {
+//    /* This should never happen, if we don't have support for SAA API,
+//     * Then we should never get a system exit!
+//     */
+//    assert( 0 ) ;
+//    return 1 ;  /* to keep compiler happy */
+// }
+// int hookup_input( tsd_t *TSD, int dummy1, streng **dummy2 )
+// {
+//    /* This should never happen, if we don't have support for SAA API,
+//     * Then we should never get a system exit!
+//     */
+//    assert( 0 ) ;
+//    return 1 ;  /* to keep compiler happy */
+// }
+// int hookup_input_output( tsd_t *TSD, int dummy1, const streng *dummy2, streng **dummy3 )
+// {
+//    /* This should never happen, if we don't have support for SAA API,
+//     * Then we should never get a system exit!
+//     */
+//    assert( 0 ) ;
+//    return 1 ;  /* to keep compiler happy */
+// }
+// int hookup_output( tsd_t *TSD, int dummy1, const streng *dummy2 )
+// {
+//    /* This should never happen, if we don't have support for SAA API,
+//     * Then we should never get a system exit!
+//     */
+//    assert( 0 ) ;
+//    return 1 ;  /* to keep compiler happy */
+// }
+// int hookup_output2( tsd_t *TSD, int dummy1, const streng *dummy2, const streng *dummy3 )
+// {
+//    /* This should never happen, if we don't have support for SAA API,
+//     * Then we should never get a system exit!
+//     */
+//    assert( 0 ) ;
+//    return 1 ;  /* to keep compiler happy */
+// }
+//
+// static void Exit( const tsd_t *TSD )
+// {
+//    /*
+//     * cheat about the const, we go away anyway :-)
+//     */
+//    jump_interpreter_exit( ( tsd_t * ) TSD, 1 );
+// }
+//
+// streng *call_unknown_external( tsd_t *TSD, const streng *dummy1, cparamboxptr dummy2, char dummy3 )
+// {
+//    NoAPI();
+//    Exit( TSD ) ;
+//    return NULL;
+// }
+//
+// streng *call_known_external( tsd_t *TSD, const struct entry_point *dummy1, cparamboxptr dummy2, char dummy3 )
+// {
+//    NoAPI();
+//    Exit( TSD ) ;
+//    return NULL;
+// }
+//
+//
+// streng *SubCom( tsd_t *TSD, const streng *dummy1, const streng *dummy2, int *dummy3 )
+// {
+//    NoAPI();
+//    Exit( TSD ) ;
+//    return NULL;
+// }
+//
+// int IfcHaveFunctionExit(const tsd_t *TSD)
+// {
+//    return(0);
+// }
+//
+// #endif
 
 static void usage( char *argv0 )
 {
@@ -1221,99 +1233,3 @@ static void usage( char *argv0 )
    fflush( stdout );
 }
 
-
-/* ==================================================================== */
-/* STUBS DE COMPATIBILIDADE WINE-OS/2 PARA O MOTOR PURGADO DO REGINA   */
-/* ==================================================================== */
-#include <stdlib.h>
-#include <string.h>
-
-/* 1. Rotinas Auxiliares e Sockets */
-void __regina_set_pause_at_exit( void ) { }
-int  __regina_init_client( tsd_t *TSD ) { return 0; }
-int  __regina_init_arexxf( tsd_t *TSD ) { return 0; }
-void *__regina_OS_Other( void *a, void *b ) { return (void *)0; }
-void *__regina_IfcAllocateMemory( size_t size ) { return malloc(size); }
-void __regina_IfcFreeMemory( void *ptr ) { free(ptr); }
-
-/* 2. Implementação limpa do mygetenv com a assinatura nativa do Regina */
-char *__regina_mygetenv( const tsd_t *TSD, const char *name, char *buf, int bufsize )
-{
-   char *res = getenv( name );
-   if ( res && buf )
-   {
-      memcpy( buf, res, bufsize - 1 );
-      buf[bufsize - 1] = '\0';
-      return buf;
-   }
-   return (char *)0;
-}
-
-/* 3. Stubs genéricos inócuos para BIFs e API SAA em falta */
-static streng *__regina_dummy_stub( void ) { return (streng *)0; }
-static int __regina_dummy_int_stub( void ) { return 0; }
-
-streng *__regina_dointerpret( tsd_t *TSD, streng *string ) { return __regina_dummy_stub(); }
-streng *__regina_rex_userid( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_writech( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_writeln( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_open( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_close( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_seek( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_readch( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_readln( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_eof( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_b2c( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_c2b( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_bitchg( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_bitclr( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_bitset( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_bittst( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_bitcomp( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_hash( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_compress( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_trim( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_upper( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_randu( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_getspace( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_freespace( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_import( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_export( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_storage( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_arexx_show( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-
-streng *__regina_cms_buftype( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_desbuf( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_dropbuf( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_find( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_index( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_justify( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_makebuf( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_sleep( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_cms_state( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-
-streng *__regina_unx_eof( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_chdir( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_crypt( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_fork( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_getenv( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_getpid( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_gettid( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_popen( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_putenv( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_uname( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_unx_unixerror( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-
-streng *__regina_rex_getcaller( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_rex_getcallstack( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-streng *__regina_rex_rxqueue( tsd_t *TSD, cparamboxptr parms ) { return __regina_dummy_stub(); }
-
-/* 4. Ganchos de execução para as rotinas internas SAA */
-int __regina_IfcExecScript( tsd_t *TSD, void *a, void *b, void *c, void *d, void *e, void *f ) { return __regina_dummy_int_stub(); }
-int __regina_IfcExecCallBack( tsd_t *TSD, void *a, void *b, void *c, void *d ) { return __regina_dummy_int_stub(); }
-int __regina_IfcVarPool( tsd_t *TSD, void *a ) { return __regina_dummy_int_stub(); }
-int __regina_IfcCreateQueue( tsd_t *TSD, void *a, void *b, void *c, void *d ) { return __regina_dummy_int_stub(); }
-int __regina_IfcDeleteQueue( tsd_t *TSD, void *a, void *b ) { return __regina_dummy_int_stub(); }
-int __regina_IfcQueryQueue( tsd_t *TSD, void *a, void *b ) { return __regina_dummy_int_stub(); }
-int __regina_IfcAddQueue( tsd_t *TSD, void *a, void *b, void *c ) { return 0; }
-int __regina_IfcPullQueue( tsd_t *TSD, void *a, void *b, void *c, void *d ) { return 0; }

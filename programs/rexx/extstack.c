@@ -216,11 +216,14 @@ int connect_to_rxstack( tsd_t *TSD, Queue *q )
       errno = eno;
    }
    /* TSD will be NULL when called from rxqueue or rxstack */
-   if ( TSD == NULL )
-      showerror( ERR_EXTERNAL_QUEUE, ERR_RXSTACK_CANT_CONNECT, ERR_RXSTACK_CANT_CONNECT_TMPL, q->u.e.name->value, q->u.e.portno, strerror ( errno ) );
+      if ( TSD == NULL )
+      showerror( ERR_EXTERNAL_QUEUE, ERR_RXSTACK_CANT_CONNECT, ERR_RXSTACK_CANT_CONNECT_TMPL,
+                 (q->u.e.name) ? q->u.e.name->value : ReginaLocalHost,
+                 q->u.e.portno, strerror( errno ) );
    else if ( !TSD->called_from_saa )
-      exiterror( ERR_EXTERNAL_QUEUE, ERR_RXSTACK_CANT_CONNECT, tmpstr_of( TSD, q->u.e.name ), q->u.e.portno, strerror ( errno ) );
-
+      exiterror( ERR_EXTERNAL_QUEUE, ERR_RXSTACK_CANT_CONNECT,
+                 (q->u.e.name) ? tmpstr_of( TSD, q->u.e.name ) : ReginaLocalHost,
+                 q->u.e.portno, strerror( errno ) );
    return -1;
 }
 
@@ -382,11 +385,12 @@ int parse_queue( tsd_t *TSD, streng *queue, Queue *q )
          return -5; /* RXQUEUE_BADQNAME */
       }
    }
-
+   
    h = PSTRENGVAL( q->u.e.name ) ;
    if ( *h == '\0' )
    {
       q->u.e.address = default_external_address();
+      q->u.e.portno = default_port_number();
       DROPSTRENG( q->u.e.name );
       q->u.e.name = default_external_name( TSD );
    }

@@ -152,7 +152,7 @@
 
 #define NO_REGINA_BALLOCS 1
 #define MONOLITHIC 1
-
+#define BUILD_NT_SERVICE 1
 
 
 #endif /* REGINA_CONFIG_H_INCLUDED */

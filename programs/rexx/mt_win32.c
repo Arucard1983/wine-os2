@@ -268,10 +268,10 @@ tsd_t *ReginaInitializeThread(void)
    OK &= init_envir(retval);            /* Initialize the envir module       */
    OK &= init_expr(retval);             /* Initialize the expr module        */
    OK &= init_error(retval);            /* Initialize the error module       */
-#ifdef VMS
-   OK &= init_vms(retval);              /* Initialize the vmscmd module      */
-   OK &= init_vmf(retval);              /* Initialize the vmsfuncs module    */
-#endif
+//#ifdef VMS
+//   OK &= init_vms(retval);              /* Initialize the vmscmd module      */
+//   OK &= init_vmf(retval);              /* Initialize the vmsfuncs module    */
+//#endif
    OK &= init_arexxf(retval);           /* Initialize the arxfuncs modules */
    retval->loopcnt = 1;                 /* stupid r2perl-module              */
    retval->traceparse = -1;
