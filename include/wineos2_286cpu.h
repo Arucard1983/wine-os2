@@ -24,6 +24,7 @@ typedef struct {
     uint8_t  read_write; /* Kept for loader backward compatibility */
     uint8_t  type;       /* LDT_TYPE_SEGMENT or LDT_TYPE_CALLGATE */
     char     mod_name[MAX_PATH]; /* Track module owner name for CallGates */
+    char     func_name[64]; /* List of system DLL */
     uint16_t param_bytes;        /* ENFORCED FIX: Total stack bytes consumed by Pascal arguments */
     
     /* Function pointer to the Wine C implementation of the OS/2 API */
@@ -73,7 +74,9 @@ typedef struct {
 #define LDT_TYPE_CALLGATE 0x80
 
 uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal);
-uint16_t wineos2_register_callgate(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
+uint16_t wineos2_get_callgate_selector_by_name(const char* mod_name, const char* func_name);
+uint16_t wineos2_register_callgate(const char* mod_name, uint16_t ordinal, const char* func_name, uint16_t param_bytes, void* thunk_ptr);
+
 
 #define IS_ZF_SET(ctx) (((ctx)->flags & ZF_MASK) != 0)
 #define IS_SF_SET(ctx) (((ctx)->flags & SF_MASK) != 0)
@@ -409,10 +412,10 @@ static inline void fpu_update_status_compare(CPU286_Context* ctx, long double st
         // Invalid case / Not comparable (Unordered)
         ctx->env16.status_word |= (0x0100 | 0x0400 | 0x4000); // C0=1, C2=1, C3=1
 
-        // FIX: Real 80287 single Invalid Operation Exception (#IE) on by 0
+        // FIX: Real 80287 real singlas Invalid Operation Exception (#IE) on biy 0
         ctx->env16.status_word |= 0x0001;
     } else if (st0 > op) {
-        // ST0 > Operand: C3=0, C2=0, C0=0 (already cleanded by clear_mask)
+        // ST0 > Operand: C3=0, C2=0, C0=0 (Already cleaned by clear_mask)
     } else if (st0 < op) {
         // ST0 < Operand: C3=0, C2=0, C0=1
         ctx->env16.status_word |= 0x0100;
@@ -507,6 +510,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
     }
 
     opcode = *code_stream;
+    printf("\n[OPCODE] initial value = %04X, at CS:IP = %04X:%04X \n", opcode, ctx->cs, ctx->ip);
 
     switch(opcode) {
          /* =========================================================================
@@ -571,7 +575,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
     /* Advance to the opcode pointer. */
     uint8_t* args_ptr = code_stream + 1;
 
-
+    printf("\n[OPCODE] which is not prefix, had value = %04X, at CS:IP = %04X:%04X \n", opcode, ctx->cs, ctx->ip);
     switch(opcode) {  /*MAJOR FLAW FIX. Once the opcode is selected, advance IP a single byte, then use it for modrm, and advance IP again!*/
     
         /* =========================================================================
@@ -580,7 +584,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x00: { /* ADD Eb, Gb (Add 8-bit Register to Memory/Register) */
             uint8_t modrm = *args_ptr; uint8_t* local_args = args_ptr + 1;
             uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &local_args);
             if ((((modrm >> 6) & 0x03) != 3) && !dest) {
                 printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x00 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
                 exit(139);
@@ -597,7 +601,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x20: { /*AND Eb, Gb (Logical AND 8-bit Register to Memory/Register)*/
             uint8_t modrm = *args_ptr; uint8_t* local_args = args_ptr + 1;
             uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &local_args);
             if ((((modrm >> 6) & 0x03) != 3) && !dest) {
                 printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x20 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
                 exit(139);
@@ -615,7 +619,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x28: { /* SUB Eb, Gb (Subtract 8-bit Register from Memory/Register) */
             uint8_t modrm = *args_ptr; uint8_t* local_args = args_ptr + 1;
             uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &local_args);
             if ((((modrm >> 6) & 0x03) != 3) && !dest) {
                 printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x28 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
                 exit(139);
@@ -645,7 +649,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x30: {
             uint8_t modrm = *args_ptr; uint8_t* local_args = args_ptr + 1;
             uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &local_args);
             if ((((modrm >> 6) & 0x03) != 3) && !dest) {
                 printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x30 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
                 exit(139);
@@ -665,7 +669,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
         case 0x38: { /* CMP Eb, Gb (Compare 8-bit Register with Memory/Register) */
             uint8_t modrm = *args_ptr; uint8_t* local_args = args_ptr + 1;
             uint8_t* src = cpu286_get_reg8(ctx, (modrm >> 3) & 0x07);
-            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &args_ptr);
+            uint8_t* dest = (((modrm >> 6) & 0x03) == 3) ? cpu286_get_reg8(ctx, modrm & 0x07) : (uint8_t*)cpu286_decode_modrm(ctx, modrm, &local_args);
             if ((((modrm >> 6) & 0x03) != 3) && !dest) {
                 printf("\n[CRITICAL GPF] Memory access violation during Opcode 0x38 decoding at CS:IP = %04X:%04X\n", ctx->cs, ctx->ip - 2);
                 exit(139);
@@ -1152,7 +1156,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                  * ========================================================================= */
                 case 0xDB: {
                     uint8_t peak_modrm = *(code_stream + 1);
-                    int is_no_wait = (peak_modrm == 0xE3 || peak_modrm == 0xE4); // FNINIT ou FSETPM
+                    int is_no_wait = (peak_modrm == 0xE3 || peak_modrm == 0xE4); // FNINIT or FSETPM
 
                     if (!is_no_wait && ((ctx->env16.status_word & 0x003F) & (~ctx->env16.control_word & 0x003F))) {
                         cpu286_trigger_protected_exception(ctx, 0x10, ctx->ip);
@@ -2544,14 +2548,26 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 case 0x40: case 0x41: case 0x42: case 0x43:
                 case 0x44: case 0x45: case 0x46: case 0x47: { /* INC reg16 */
                     uint16_t* reg = cpu286_get_reg16(ctx, opcode & 0x07);
-                    if (reg) (*reg)++;
+                    if (reg) {
+                        uint16_t old_val = *reg;
+                        uint16_t res = old_val + 1;
+                        *reg = res;
+                        cpu286_update_flags16(ctx, res); /* Update ZF and SF without touching CF! */
+                        if (old_val == 0x7FFF) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                    }
                     ctx->ip++;
                     break;
                 }
                 case 0x48: case 0x49: case 0x4A: case 0x4B:
                 case 0x4C: case 0x4D: case 0x4E: case 0x4F: { /* DEC reg16 */
                     uint16_t* reg = cpu286_get_reg16(ctx, opcode & 0x07);
-                    if (reg) (*reg)--;
+                    if (reg) {
+                        uint16_t old_val = *reg;
+                        uint16_t res = old_val - 1;
+                        *reg = res;
+                        cpu286_update_flags16(ctx, res); /* Update ZF and SF without touching CF! */
+                        if (old_val == 0x8000) ctx->flags |= OF_MASK; else ctx->flags &= ~OF_MASK;
+                    }
                     ctx->ip++;
                     break;
                 }
@@ -2912,7 +2928,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                         return;
                     }
                     if (size == 1) {
-                        uint8_t val8 = (uint8_t)src_ptr;
+                        uint8_t val8 = *(uint8_t*)src_ptr;
                         printf("[I/O DEB] OUTSB: Port 0x%04X -> Byte: 0x%02X (Char: '%c')\n", ctx->dx, val8, (val8 >= 32 && val8 <= 126) ? val8 : '.');
                     } else {
                         uint16_t val16 = 0;
@@ -3756,7 +3772,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                 ctx->rep_prefix = 0; ctx->seg_override = 0; ctx->lock_prefix = 0;
                 return;
             }
-            
+
             /* 1. Check if the interruption was already registed (ex: internal hooks) */
             if (idt_entry->present && idt_entry->wine_int_thunk) {
                 ctx->ip = next_instruction_ip;
@@ -4223,7 +4239,7 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
 
 
         /* =========================================================================
-         * HIGH-LEVEL PROCEDURE PROLOGUE (ENTER) - CORRIGIDO
+         * HIGH-LEVEL PROCEDURE PROLOGUE (ENTER) - FIXED
          * ========================================================================= */
         case 0xC8: {
             uint16_t alloc_size;
@@ -4256,8 +4272,8 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
             ctx->bp = frame_ptr;
             ctx->sp -= alloc_size;
 
-            /* 3. Atomic update of IP once donee th routine */
-            ctx->ip += 3;
+            /* 3. Atomic update of IP once done the routine */
+            ctx->ip += 4;
             break;
         }
 
@@ -5165,31 +5181,28 @@ static inline void cpu286_execute_opcode(CPU286_Context* ctx) {
                             case 0x3B: { /* CMP Gv, Ev */
                                 uint8_t modrm = *args_ptr;
                                 uint8_t *local_args = args_ptr + 1;
-                                uint16_t dest_val = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
-                                uint16_t src_val;
+                                uint16_t *dest_ptr = cpu286_get_reg16(ctx, (modrm >> 3) & 0x07);
+                                uint16_t dest_val = *dest_ptr;
+                                uint16_t src_val = 0;
 
                                 if (((modrm >> 6) & 0x03) == 3) {
-                                    src_val = cpu286_get_reg16(ctx, modrm & 0x07);
+                                    src_val = *cpu286_get_reg16(ctx, modrm & 0x07);
                                 } else {
-                                    void *src_addr = (void *)cpu286_decode_modrm(ctx, modrm, &local_args);
+                                    void *src_addr = cpu286_decode_modrm(ctx, modrm, &local_args);
                                     if (!src_addr) {
-                                        break;
+                                        cpu286_trigger_protected_exception(ctx, 0x0D, instruction_start_ip);
+                                        return;
                                     }
                                     memcpy(&src_val, src_addr, 2);
                                 }
 
                                 uint32_t res = (uint32_t)dest_val - (uint32_t)src_val;
                                 cpu286_update_flags16(ctx, res);
-                                if (dest_val < src_val) {
-                                    ctx->flags |= CF_MASK;
-                                } else {
-                                    ctx->flags &= ~CF_MASK;
-                                }
+                                if (dest_val < src_val) ctx->flags |= CF_MASK; else ctx->flags &= ~CF_MASK;
 
                                 ctx->ip = ctx->ip + 1 + (uint16_t)(local_args - args_ptr);
                                 break;
                             }
-
 
                             case 0x05: { /* ADD AX, iw */
                                 uint16_t imm16 = 0;
