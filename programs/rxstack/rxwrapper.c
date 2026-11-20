@@ -51,7 +51,7 @@ int main(void)
     PROCESS_INFORMATION pi;
     DWORD exit_code = 1;
 
-    /* 1. Localizar a pasta atual do executável para encontrar o rexx.exe irmão */
+    /* 1. Find the current directory of parent rexx.exe program */
     if (GetModuleFileNameA(NULL, exe_path, sizeof(exe_path)) == 0)
     {
         fprintf(stderr, "Error: Could not determine module path.\n");
@@ -70,11 +70,11 @@ int main(void)
     }
     strcat(rexx_path, "rexx.exe");
 
-    /* 2. Extrair argumentos originais preservando aspas e espaços */
+    /* 2. Extract original arguments while perserving quotes and spaces */
     raw_cmdline = GetCommandLineA();
     args = skip_argv0(raw_cmdline);
 
-    /* Formato: "<caminho>\rexx.exe" -q <argumentos> */
+    /* Format: "<path>\rexx.exe" -s <arguments> */
     total_len = strlen(rexx_path) + strlen(RX_SWITCH) + strlen(args) + 16;
     new_cmdline = (char *)HeapAlloc(GetProcessHeap(), 0, total_len);
     if (!new_cmdline)
@@ -88,7 +88,7 @@ int main(void)
     else
         sprintf(new_cmdline, "\"%s\" %s", rexx_path, RX_SWITCH);
 
-    /* 3. Configurar herança de handles (essencial para dir | rxqueue) */
+    /* 3. Configure handles heritance (needed for dir | rxstack) */
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
@@ -98,14 +98,14 @@ int main(void)
 
     memset(&pi, 0, sizeof(pi));
 
-    /* 4. Executar rexx.exe e aguardar pelo término */
+    /* 4. Execute rexx.exe and wait to finish */
     if (!CreateProcessA(
             rexx_path,
             new_cmdline,
             NULL,
             NULL,
-            TRUE,   /* bInheritHandles = TRUE para pipes stdin/stdout */
-            0,      /* Sem DETACHED_PROCESS para manter consola OS/2 */
+            TRUE,   /* bInheritHandles = TRUE to pipes stdin/stdout */
+            0,      /* No DETACHED_PROCESS to maintain OS/2 console */
             NULL,
             NULL,
             &si,
