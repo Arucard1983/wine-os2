@@ -15,7 +15,7 @@
 OS2_LDT_ENTRY* virtual_ldt = NULL;
 
 /* Define the function pointer type for the callgate registration routine */
-typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, const char* func_name, uint16_t param_bytes, void* thunk_ptr);
 typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 
 /* =========================================================================
@@ -183,11 +183,11 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) return FALSE;
 
-         pfnRegister("KBDCALLS", 4,  8,  os2_Kbd16CharIn);      /* Ptr(4) + USHORT(2) + USHORT(2) */
-        pfnRegister("KBDCALLS", 9,  12, os2_Kbd16StringIn);    /* Ptr(4) + Ptr(4) + USHORT(2) + USHORT(2) */
-        pfnRegister("KBDCALLS", 19, 6,  os2_Kbd16SetStatus);   /* Ptr(4) + USHORT(2) */
-        pfnRegister("KBDCALLS", 29, 6,  os2_Kbd16GetStatus);   /* Ptr(4) + USHORT(2) */
-        pfnRegister("KBDCALLS", 42, 2,  os2_Kbd16FlushBuffer); /* USHORT(2) */
+        pfnRegister("KBDCALLS", 4,  "KBDCHARIN", 8,  os2_Kbd16CharIn);      /* Ptr(4) + USHORT(2) + USHORT(2) */
+        pfnRegister("KBDCALLS", 9,  "KBDSTRINGIN", 12, os2_Kbd16StringIn);    /* Ptr(4) + Ptr(4) + USHORT(2) + USHORT(2) */
+        pfnRegister("KBDCALLS", 19, "KBDSETSTATUS", 6,  os2_Kbd16SetStatus);   /* Ptr(4) + USHORT(2) */
+        pfnRegister("KBDCALLS", 29, "KBDGETSTATUS", 6,  os2_Kbd16GetStatus);   /* Ptr(4) + USHORT(2) */
+        pfnRegister("KBDCALLS", 42, "KBDFLUSHBUFFER", 2,  os2_Kbd16FlushBuffer); /* USHORT(2) */
 
     }
     return TRUE;
