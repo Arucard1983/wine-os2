@@ -90,6 +90,7 @@ static int global_module_cache_count = 0;
 /* External symbols from virtual environment */
 extern OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
 extern uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal);
+extern uint16_t wineos2_get_callgate_selector_by_name(const char* mod_name, const char* func_name);
 
 /* Destructor to safely clean up modular memory footprints */
 void wineos2_free_module_cache(void) {
@@ -185,12 +186,15 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
         uint32_t chain_safety_counter = 0;
         long item_start_pos = ftell(file);
 
-        if (fread(&base_item, sizeof(NE_RELOC_BASE), 1, file) != 1) break;
+                if (fread(&base_item, sizeof(NE_RELOC_BASE), 1, file) != 1) break;
+        
         uint8_t pure_source_type = base_item.source_type & 0x0F;
+        uint8_t pure_target_type = base_item.target_type & 0x03;
+        uint8_t is_additive      = (base_item.target_type & 0x04) != 0;
 
         memset(resolved_dll_name, 0, sizeof(resolved_dll_name));
 
-        if (base_item.target_type == 0) { /* Internal Reference */
+        if (pure_target_type == 0) { /* Internal Reference */
             NE_TARGET_INTERNAL target;
             if (fread(&target, sizeof(NE_TARGET_INTERNAL), 1, file) == 1) {
                 resolved_selector = (target.seg_number << 3) | 3;
@@ -199,7 +203,7 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
             }
             fseek(file, item_start_pos + 8, SEEK_SET);
         }
-        else if (base_item.target_type == 1 || base_item.target_type == 2) { /* External DLL Reference */
+        else if (pure_target_type == 1) { /* IMPORTORDINAL */
             NE_TARGET_ORDINAL target;
             if (fread(&target, sizeof(NE_TARGET_ORDINAL), 1, file) == 1) {
                 target_ordinal_val = target.ordinal;
@@ -207,11 +211,36 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
                 const char* cached_name = wineos2_resolve_cached_module(target.module_index);
                 lstrcpynA(resolved_dll_name, cached_name, sizeof(resolved_dll_name));
 
-                printf("[NE Loader] Import Link -> (dll [%d] %s.DLL .... ordinal %d)\n",
-                       target.module_index, resolved_dll_name, target_ordinal_val);
+                printf("[NE Loader] Import Link -> (dll [%d] %s.DLL .... ordinal %d | additive=%d)\n",
+                       target.module_index, resolved_dll_name, target_ordinal_val, is_additive);
                 fflush(stdout);
 
                 resolved_selector = wineos2_get_callgate_selector(resolved_dll_name, target_ordinal_val);
+                if (resolved_selector != 0) {
+                    target_valid = 1;
+                }
+            }
+            fseek(file, item_start_pos + 8, SEEK_SET);
+        }
+        else if (pure_target_type == 2) { /* IMPORTNAME */
+            NE_TARGET_ORDINAL target; /* target.ordinal é o offset na Imported Names Table */
+            if (fread(&target, sizeof(NE_TARGET_ORDINAL), 1, file) == 1) {
+                const char* cached_name = wineos2_resolve_cached_module(target.module_index);
+                lstrcpynA(resolved_dll_name, cached_name, sizeof(resolved_dll_name));
+
+                fseek(file, ne_base + ne_hdr->import_name + target.ordinal, SEEK_SET);
+                uint8_t name_len = 0;
+                char func_name[64] = {0};
+                if (fread(&name_len, 1, 1, file) == 1 && name_len > 0) {
+                    fread(func_name, 1, name_len, file);
+                    func_name[name_len] = '\0';
+                }
+
+                printf("[NE Loader] Import Name -> (dll [%d] %s.DLL .... %s | additive=%d)\n",
+                       target.module_index, resolved_dll_name, func_name, is_additive);
+                fflush(stdout);
+
+                resolved_selector = wineos2_get_callgate_selector_by_name(resolved_dll_name, func_name);
                 if (resolved_selector != 0) {
                     target_valid = 1;
                 }
@@ -222,6 +251,7 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
             fseek(file, item_start_pos + 8, SEEK_SET);
             continue;
         }
+
 
         if (!target_valid || resolved_selector == 0) continue;
 
@@ -236,30 +266,33 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
             patch_address = (uint8_t*)segment_memory + current_offset;
             next_offset = *(uint16_t*)patch_address;
 
-            if (base_item.target_type == 0) {
-                if (pure_source_type == 3) {
+            if (pure_target_type == 0) { /* Internal Reference */
+                if (pure_source_type == 2) { /* 16-bit Selector */
                     *(uint16_t*)patch_address = resolved_selector;
                 }
-                else if (pure_source_type == 5) {
+                else if (pure_source_type == 3) { /* 16:16 Far Pointer */
                     *(uint16_t*)patch_address = internal_offset;
                     *(uint16_t*)(patch_address + 2) = resolved_selector;
                 }
-            }
-            else if (base_item.target_type == 1 || base_item.target_type == 2) {
-                if (pure_source_type == 3) {
-                    if (*(patch_address - 1) == 0x9A) {
-                        *(uint16_t*)patch_address = 0x0000;              // For FF FF going zero with 9A opcode
-                        *(uint16_t*)(patch_address + 2) = resolved_selector; // Store selector
-                    } else {
-                        // For other situations
-                        *(uint16_t*)patch_address = resolved_selector;
-                    }
-                }
-                else if (pure_source_type == 5) {
+                else if (pure_source_type == 5) { /* 16-bit Offset */
                     *(uint16_t*)patch_address = internal_offset;
+                }
+            }
+            else if (pure_target_type == 1 || pure_target_type == 2) { /* External DLL Reference */
+                if (pure_source_type == 2) { /* 16-bit Selector */
+                    *(uint16_t*)patch_address = resolved_selector;
+                }
+                else if (pure_source_type == 3) { /* 16:16 Far Pointer (CallGate) */
+                    *(uint16_t*)patch_address = 0x0000;
                     *(uint16_t*)(patch_address + 2) = resolved_selector;
                 }
+                else if (pure_source_type == 5) { /* 16-bit Offset */
+                    *(uint16_t*)patch_address = internal_offset;
+                }
             }
+
+            /* If it is NRADD (bit 2 of target_type), there is no list linked on memory! */
+            if (is_additive) break;
 
             if (next_offset == current_offset || next_offset == 0) break;
             current_offset = next_offset;

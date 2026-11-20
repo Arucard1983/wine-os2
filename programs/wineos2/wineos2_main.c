@@ -9,13 +9,15 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "os2types.h"
 #include "wineos2_286cpu.h"
 #include "wineos2_env.h"
 
-/* ENFORCED FIX: Centralized global memory allocation instance for the shared virtual LDT */
+/* ENFORCED FIX: Centralized global memory allocation instance for the shared virtual LDT and IDT */
 OS2_LDT_ENTRY virtual_ldt[LDT_MAX_ENTRIES];
+OS2_IDT_ENTRY virtual_idt[IDT_MAX_ENTRIES];
 
 /* Forward declarations for the loader components */
 int lx_process_object_pages(FILE* file, uint32_t ne_base, void* hdr, void* obj, void* addr);
@@ -294,11 +296,11 @@ __declspec(dllexport) void* CDECL wineos2_get_ldt_ptr(void) {
     return (void*)virtual_ldt;
 }
 
-__declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr) {
+__declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_name, uint16_t ordinal, const char* func_name, uint16_t param_bytes, void* thunk_ptr) {
     uint16_t i;
     for (i = 500; i < LDT_MAX_ENTRIES; i++) {
         if (!virtual_ldt[i].present) {
-            virtual_ldt[i].wine_thunk   = (uintptr_t)thunk_ptr; /* FIXED: Correct casting using uintptr_t */
+            virtual_ldt[i].wine_thunk   = (void*)(uintptr_t)thunk_ptr;
             virtual_ldt[i].limit        = ordinal;
             virtual_ldt[i].param_bytes  = param_bytes;
             virtual_ldt[i].present      = 1;
@@ -306,25 +308,60 @@ __declspec(dllexport) uint16_t CDECL wineos2_register_callgate(const char* mod_n
 
             if (mod_name) {
                 lstrcpynA(virtual_ldt[i].mod_name, mod_name, sizeof(virtual_ldt[i].mod_name));
+                for (int j = 0; virtual_ldt[i].mod_name[j]; j++) {
+                    virtual_ldt[i].mod_name[j] = (char)toupper((unsigned char)virtual_ldt[i].mod_name[j]);
+                }
             } else {
                 lstrcpynA(virtual_ldt[i].mod_name, "DOSCALLS", sizeof(virtual_ldt[i].mod_name));
             }
+
+            if (func_name) {
+                lstrcpynA(virtual_ldt[i].func_name, func_name, sizeof(virtual_ldt[i].func_name));
+                for (int j = 0; virtual_ldt[i].func_name[j]; j++) {
+                    virtual_ldt[i].func_name[j] = (char)toupper((unsigned char)virtual_ldt[i].func_name[j]);
+                }
+            } else {
+                virtual_ldt[i].func_name[0] = '\0';
+            }
+
             return (i << 3) | 3;
         }
     }
     return 0;
 }
 
-/* =========================================================================
-* REAL INTERRUPT VECTORS TABLE INSTANCE (CPU PROTECTED MODE COMPLIANCE)
-* ========================================================================= */
+uint16_t wineos2_get_callgate_selector_by_name(const char* mod_name, const char* func_name) {
+    uint16_t i;
+    char upper_mod[MAX_PATH];
+    char upper_func[64];
 
-/* Physical allocation of IDT required by 286 emulator */
-void* os2_interrupt_vectors[256] = { NULL };
+    if (!mod_name || !func_name) return 0;
 
-/* Required to critical DLL like DOSCALLS.DLL to handle virtual tables */
-__declspec(dllexport) void* CDECL wineos2_get_interrupt_vectors_ptr(void) {
-    return (void*)os2_interrupt_vectors;
+    lstrcpynA(upper_mod, mod_name, sizeof(upper_mod));
+    for (int j = 0; upper_mod[j]; j++) {
+        upper_mod[j] = (char)toupper((unsigned char)upper_mod[j]);
+    }
+
+    lstrcpynA(upper_func, func_name, sizeof(upper_func));
+    for (int j = 0; upper_func[j]; j++) {
+        upper_func[j] = (char)toupper((unsigned char)upper_func[j]);
+    }
+
+    for (i = 500; i < LDT_MAX_ENTRIES; i++) {
+        if (virtual_ldt[i].present && virtual_ldt[i].type == LDT_TYPE_CALLGATE) {
+            if (strncmp(virtual_ldt[i].mod_name, upper_mod, sizeof(virtual_ldt[i].mod_name)) == 0 &&
+                strncmp(virtual_ldt[i].func_name, upper_func, sizeof(virtual_ldt[i].func_name)) == 0) {
+                return (i << 3) | 3;
+            }
+        }
+    }
+    return 0;
+}
+
+
+/* Required  to handle virtual tables */
+__declspec(dllexport) void* CDECL wineos2_get_idt_ptr(void) {
+    return (void*)virtual_idt;
 }
 
 uint16_t wineos2_get_callgate_selector(const char* mod_name, uint16_t ordinal) {
