@@ -17,7 +17,7 @@
 OS2_LDT_ENTRY* virtual_ldt = NULL;
 OS2_IDT_ENTRY* virtual_idt = NULL;
 
-typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, const char* func_name, uint16_t param_bytes, void* thunk_ptr);
 typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 typedef void* (CDECL *PFN_wineos2_get_idt_ptr)(void);
 
@@ -214,29 +214,30 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         pfnRegister = (PFN_wineos2_register_callgate)GetProcAddress(hCore, "wineos2_register_callgate");
         if (!pfnRegister) return FALSE;
 
-        /* Ordinal execution callback registration table for DOSCALLS */
-        pfnRegister("DOSCALLS", 5,   4,  os2_Dos16Exit);
-        pfnRegister("DOSCALLS", 34,  8,  os2_Dos16Allocseg);
-        pfnRegister("DOSCALLS", 38,  4,  os2_Dos16ReAllocseg);
-        pfnRegister("DOSCALLS", 49,  4,  os2_Dos16GetMachineMode);
-        pfnRegister("DOSCALLS", 58,  12, os2_Dos16ChgFilePtr);
-        pfnRegister("DOSCALLS", 59,  2,  os2_Dos16Close);
-        pfnRegister("DOSCALLS", 60,  6,  os2_Dos16Delete);
-        pfnRegister("DOSCALLS", 64,  20, os2_Dos16FindFirst);
-        pfnRegister("DOSCALLS", 65,  12, os2_Dos16FindNext);
-        pfnRegister("DOSCALLS", 68,  6,  os2_Dos16NewSize);
-        pfnRegister("DOSCALLS", 70,  24, os2_Dos16Open);
-        pfnRegister("DOSCALLS", 74,  6,  os2_Dos16QFHandState);
-        pfnRegister("DOSCALLS", 75,  6,  os2_Dos16QFileMode);
-        pfnRegister("DOSCALLS", 77,  10, os2_Dos16QHandType);
-        pfnRegister("DOSCALLS", 83,  10, os2_Dos16SetFileInfo);
-        pfnRegister("DOSCALLS", 84,  8,  os2_Dos16SetFileMode);
-        pfnRegister("DOSCALLS", 89,  10, os2_Dos16SetVec);
-        pfnRegister("DOSCALLS", 92,  4,  os2_Dos16GetVersion);
-        pfnRegister("DOSCALLS", 137, 12, os2_Dos16Read);
-        pfnRegister("DOSCALLS", 138, 12, os2_Dos16Write);
-        pfnRegister("DOSCALLS", 144, 20, os2_Dos16ExecPgm);
-        pfnRegister("DOSCALLS", 151, 16, os2_Dos16SearchPath);
+                /* Ordinal & Name execution callback registration table for DOSCALLS */
+        pfnRegister("DOSCALLS", 5,   "DOSEXIT",           4,  os2_Dos16Exit);
+        pfnRegister("DOSCALLS", 34,  "DOSALLOCSEG",       8,  os2_Dos16Allocseg);
+        pfnRegister("DOSCALLS", 38,  "DOSREALLOCSEG",     4,  os2_Dos16ReAllocseg);
+        pfnRegister("DOSCALLS", 49,  "DOSGETMACHINEMODE", 4,  os2_Dos16GetMachineMode);
+        pfnRegister("DOSCALLS", 58,  "DOSCHGFILEPTR",     12, os2_Dos16ChgFilePtr);
+        pfnRegister("DOSCALLS", 59,  "DOSCLOSE",          2,  os2_Dos16Close);
+        pfnRegister("DOSCALLS", 60,  "DOSDELETE",         6,  os2_Dos16Delete);
+        pfnRegister("DOSCALLS", 64,  "DOSFINDFIRST",      20, os2_Dos16FindFirst);
+        pfnRegister("DOSCALLS", 65,  "DOSFINDNEXT",       12, os2_Dos16FindNext);
+        pfnRegister("DOSCALLS", 68,  "DOSNEWSIZE",        6,  os2_Dos16NewSize);
+        pfnRegister("DOSCALLS", 70,  "DOSOPEN",           24, os2_Dos16Open);
+        pfnRegister("DOSCALLS", 74,  "DOSQFHANDSTATE",    6,  os2_Dos16QFHandState);
+        pfnRegister("DOSCALLS", 75,  "DOSQFILEMODE",      6,  os2_Dos16QFileMode);
+        pfnRegister("DOSCALLS", 77,  "DOSQHANDTYPE",      10, os2_Dos16QHandType);
+        pfnRegister("DOSCALLS", 83,  "DOSSETFILEINFO",    10, os2_Dos16SetFileInfo);
+        pfnRegister("DOSCALLS", 84,  "DOSSETFILEMODE",    8,  os2_Dos16SetFileMode);
+        pfnRegister("DOSCALLS", 89,  "DOSSETVEC",         10, os2_Dos16SetVec);
+        pfnRegister("DOSCALLS", 92,  "DOSGETVERSION",     4,  os2_Dos16GetVersion);
+        pfnRegister("DOSCALLS", 137, "DOSREAD",           12, os2_Dos16Read);
+        pfnRegister("DOSCALLS", 138, "DOSWRITE",          12, os2_Dos16Write);
+        pfnRegister("DOSCALLS", 144, "DOSEXECPGM",        20, os2_Dos16ExecPgm);
+        pfnRegister("DOSCALLS", 151, "DOSSEARCHPATH",     16, os2_Dos16SearchPath);
+
         printf("[Doscalls] Autonomous 16/32-bit Core Engine registration completed via NTDLL pipeline.\n");
         fflush(stdout);
     }
