@@ -15,7 +15,7 @@
 OS2_LDT_ENTRY* virtual_ldt = NULL;
 
 /* Define the function pointer type for the callgate registration routine */
-typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, const char* func_name, uint16_t param_bytes, void* thunk_ptr);
 typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 
 /* =========================================================================
@@ -202,13 +202,14 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         if (!pfnRegister) return FALSE;
 
         /* Ordinal 19 (Vio16WrtTTY): FarPtr(4) + USHORT(2) + USHORT(2) = 8 bytes */
-        pfnRegister("VIOCALLS", 19, 8, os2_Vio16WrtTTY);
+        pfnRegister("VIOCALLS", 19, "VIOWRTTTY",     8,  os2_Vio16WrtTTY);
 
         /* Ordinal 21 (Vio16GetMode): FarPtr(4) + USHORT(2) = 6 bytes */
-        pfnRegister("VIOCALLS", 21, 6, os2_Vio16GetMode);
+        pfnRegister("VIOCALLS", 21, "VIOGETMODE",    6,  os2_Vio16GetMode);
 
         /* Ordinal 64 (Vio16QueryFonts): FarPtr(4)*4 + ULONG(4)*2 + USHORT(2) = 26 bytes */
-        pfnRegister("VIOCALLS", 64, 26, os2_Vio16QueryFonts);
+        pfnRegister("VIOCALLS", 64, "VIOQUERYFONTS", 26, os2_Vio16QueryFonts);
+
 
         printf("[Viocalls] Autonomous 16-bit Callgate registration completed via runtime linking.\n");
         fflush(stdout);
