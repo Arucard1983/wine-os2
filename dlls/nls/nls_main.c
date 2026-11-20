@@ -15,7 +15,7 @@
 
 OS2_LDT_ENTRY* virtual_ldt = NULL;
 
-typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, uint16_t param_bytes, void* thunk_ptr);
+typedef uint16_t (CDECL *PFN_wineos2_register_callgate)(const char* mod_name, uint16_t ordinal, const char* func_name, uint16_t param_bytes, void* thunk_ptr);
 typedef void* (CDECL *PFN_wineos2_get_ldt_ptr)(void);
 
 /* =========================================================================
@@ -116,8 +116,8 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         if (!pfnRegister) return FALSE;
 
         /* NLS Ordinals tables */
-        pfnRegister("NLS", 2, 14, os2_Dos16GetCollate); /* USHORT(2) + 3*FarPtr(12) = 14 */
-        pfnRegister("NLS", 4, 10, os2_Dos16GetDBCSEv);  /* USHORT(2) + 2*FarPtr(8)  = 10 */
+        pfnRegister("NLS", 2, "DOSGETCOLLATE", 14, os2_Dos16GetCollate); /* USHORT(2) + 3*FarPtr(12) = 14 */
+        pfnRegister("NLS", 4, "DOSGETDBCSEV", 10, os2_Dos16GetDBCSEv);  /* USHORT(2) + 2*FarPtr(8)  = 10 */
 
         printf("[NLS] Dynamic Callgates allocated sucessfully!\n");
         fflush(stdout);
