@@ -266,6 +266,9 @@ void ne_process_relocations(FILE* file, uint32_t reloc_table_offset, void* segme
             patch_address = (uint8_t*)segment_memory + current_offset;
             next_offset = *(uint16_t*)patch_address;
 
+            printf("[NE Reloc] target_type=%d source_type=0x%02X additive=%d offset=0x%04X -> sel=0x%04X\n",
+                   pure_target_type, base_item.source_type, is_additive, current_offset, resolved_selector);
+
             if (pure_target_type == 0) { /* Internal Reference */
                 if (pure_source_type == 2) { /* 16-bit Selector */
                     *(uint16_t*)patch_address = resolved_selector;
@@ -328,22 +331,18 @@ int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr) {
         memset(linear_mem, 0, 0x10000);
 
         if (seg.sector_offset > 0) {
-            /*
-            Sector size allignment
-             */
-            uint32_t sector_size = (uint32_t)(1 << ne_hdr->logical_sector);
+            /* Sector size alignment (default shift is 9 -> 512 bytes if 0) */
+            uint32_t shift = (ne_hdr->logical_sector == 0) ? 9 : ne_hdr->logical_sector;
+            uint32_t sector_size = (uint32_t)(1 << shift);
             uint32_t file_offset = (uint32_t)seg.sector_offset * sector_size;
 
-            /*
-             Relocation Tables
-             */
-            long reloc_table_offset_raw = (long)(file_offset + seg.length);
+            /* 0 in seg.length means 64KB (0x10000) when sector_offset > 0 */
+            uint32_t actual_seg_len = (seg.length == 0) ? 0x10000 : seg.length;
+            long reloc_table_offset_raw = (long)(file_offset + actual_seg_len);
 
             /* Fill legitimate data on emulated RAM */
             fseek(file, file_offset, SEEK_SET);
-            if (seg.length > 0) {
-                fread(linear_mem, 1, seg.length, file);
-            }
+            fread(linear_mem, 1, actual_seg_len, file);
 
             /* Fill dynamic fixups (0x0100) */
             if (seg.flags & 0x0100) {

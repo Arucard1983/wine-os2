@@ -238,9 +238,28 @@ int wineos2_execute_ne_process(FILE* file, uint32_t ne_lfanew, uint32_t active_p
         cpu_context.ss = (ne_hdr.auto_data_seg << 3) | 3;
         cpu_context.sp = 0xFFFE;
     } else {
-        cpu_context.ss = (ne_hdr.initial_ss_seg << 3) | 3;
-        cpu_context.sp = ne_hdr.initial_sp;
+        uint16_t ss_idx = ne_hdr.initial_ss_seg;
+        /* If the linker defined a separated stack/BSS separado which do not had an entry on Segment Table */
+        if (ss_idx > ne_hdr.seg_count && ss_idx < LDT_MAX_ENTRIES && !virtual_ldt[ss_idx].present) {
+            uint32_t stack_alloc_size = (ne_hdr.stack_size > 0) ? 0x10000 : 0x10000;
+            void* stack_mem = VirtualAlloc(NULL, stack_alloc_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            if (!stack_mem) {
+                printf("[NE Error] Failed to allocate virtual stack segment #%u\n", ss_idx);
+                return 0;
+            }
+            memset(stack_mem, 0, stack_alloc_size);
+            virtual_ldt[ss_idx].base       = (uint32_t)(uintptr_t)stack_mem;
+            virtual_ldt[ss_idx].limit      = 0xFFFF;
+            virtual_ldt[ss_idx].present    = 1;
+            virtual_ldt[ss_idx].read_write = 1;
+            virtual_ldt[ss_idx].type       = LDT_TYPE_SEGMENT;
+            printf("[NE Loader] Allocated BSS/Stack Segment #%u at: %p | Selector: 0x%04X\n",
+                   ss_idx, stack_mem, (ss_idx << 3) | 3);
+        }
+        cpu_context.ss = (ss_idx << 3) | 3;
+        cpu_context.sp = (ne_hdr.initial_sp == 0) ? 0xFFFE : ne_hdr.initial_sp;
     }
+
 
     /* ENFORCED FIX: Fix the bug of SP=0x0000 on start-up to avoid fake Stack Overflow */
     if (cpu_context.sp == 0x0000) {
