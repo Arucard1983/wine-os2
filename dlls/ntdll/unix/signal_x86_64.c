@@ -270,46 +270,6 @@ __ASM_GLOBAL_FUNC( modify_ldt,
 
 #include <i386/user_ldt.h>
 
-/* The 'full' structs were added in the macOS 10.14.6 SDK/Xcode 10.3. */
-#ifndef _STRUCT_X86_THREAD_FULL_STATE64
-#define _STRUCT_X86_THREAD_FULL_STATE64 struct __darwin_x86_thread_full_state64
-_STRUCT_X86_THREAD_FULL_STATE64
-{
-        _STRUCT_X86_THREAD_STATE64      __ss64;
-        __uint64_t                      __ds;
-        __uint64_t                      __es;
-        __uint64_t                      __ss;
-        __uint64_t                      __gsbase;
-};
-#endif
-
-#ifndef _STRUCT_MCONTEXT64_FULL
-#define _STRUCT_MCONTEXT64_FULL      struct __darwin_mcontext64_full
-_STRUCT_MCONTEXT64_FULL
-{
-        _STRUCT_X86_EXCEPTION_STATE64   __es;
-        _STRUCT_X86_THREAD_FULL_STATE64 __ss;
-        _STRUCT_X86_FLOAT_STATE64       __fs;
-};
-#endif
-
-#ifndef _STRUCT_MCONTEXT_AVX64_FULL
-#define _STRUCT_MCONTEXT_AVX64_FULL  struct __darwin_mcontext_avx64_full
-_STRUCT_MCONTEXT_AVX64_FULL
-{
-        _STRUCT_X86_EXCEPTION_STATE64   __es;
-        _STRUCT_X86_THREAD_FULL_STATE64 __ss;
-        _STRUCT_X86_AVX_STATE64         __fs;
-};
-#endif
-
-/* AVX512 structs were added in the macOS 10.13 SDK/Xcode 9. */
-#ifdef _STRUCT_MCONTEXT_AVX512_64_FULL
-#define SIZEOF_STRUCT_MCONTEXT_AVX512_64_FULL sizeof(_STRUCT_MCONTEXT_AVX512_64_FULL)
-#else
-#define SIZEOF_STRUCT_MCONTEXT_AVX512_64_FULL 2664
-#endif
-
 #define RAX_sig(context)     ((context)->uc_mcontext->__ss.__rax)
 #define RBX_sig(context)     ((context)->uc_mcontext->__ss.__rbx)
 #define RCX_sig(context)     ((context)->uc_mcontext->__ss.__rcx)
@@ -343,7 +303,7 @@ static inline void *FPU_sig( const ucontext_t *context )
 {
     if (context->uc_mcsize == sizeof(_STRUCT_MCONTEXT64_FULL) ||
         context->uc_mcsize == sizeof(_STRUCT_MCONTEXT_AVX64_FULL) ||
-        context->uc_mcsize == SIZEOF_STRUCT_MCONTEXT_AVX512_64_FULL)
+        context->uc_mcsize == sizeof(_STRUCT_MCONTEXT_AVX512_64_FULL))
     {
         return &((_STRUCT_MCONTEXT64_FULL *)context->uc_mcontext)->__fs.__fpu_fcw;
     }
@@ -354,7 +314,7 @@ static inline const WORD *SS_sig_ptr( const ucontext_t *context )
 {
     if (context->uc_mcsize == sizeof(_STRUCT_MCONTEXT64_FULL) ||
         context->uc_mcsize == sizeof(_STRUCT_MCONTEXT_AVX64_FULL) ||
-        context->uc_mcsize == SIZEOF_STRUCT_MCONTEXT_AVX512_64_FULL)
+        context->uc_mcsize == sizeof(_STRUCT_MCONTEXT_AVX512_64_FULL))
     {
         return (WORD *)&((_STRUCT_MCONTEXT64_FULL *)context->uc_mcontext)->__ss.__ss;
     }
@@ -2936,6 +2896,7 @@ void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, TEB *teb )
     if ((wow_context = get_cpu_area( data, IMAGE_FILE_MACHINE_I386 )))
     {
         wow_context->ContextFlags = CONTEXT_I386_ALL;
+        if (user_shared_data->XState.EnabledFeatures) wow_context->ContextFlags |= CONTEXT_I386_XSTATE;
         wow_context->Eax = (ULONG_PTR)entry;
         wow_context->Ebx = (arg == peb ? (ULONG_PTR)wow_peb : (ULONG_PTR)arg);
         wow_context->Esp = get_wow_teb( teb )->Tib.StackBase - 16;

@@ -862,21 +862,24 @@ static void win32u_vkGetDeviceQueue2( VkDevice client_device, const VkDeviceQueu
     *client_queue = device_find_queue( client_device, &info );
 }
 
-static VkResult import_semaphore_from_d3dkmt_sync( struct vulkan_device *device, D3DKMT_HANDLE sync, VkSemaphore host_semaphore )
+static VkResult import_semaphore_from_d3dkmt_sync( struct vulkan_device *device, D3DKMT_HANDLE sync, VkSemaphore host_semaphore, struct fd_desc desc )
 {
-    VkExternalSemaphoreHandleTypeFlagBits type;
-
-    switch ((type = get_host_external_semaphore_type()))
+    switch (desc.type)
     {
-    case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT:
+    case FD_OPAQUE:
     {
-        VkImportSemaphoreFdInfoKHR fd_info = {.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR, .semaphore = host_semaphore, .handleType = type};
+        VkImportSemaphoreFdInfoKHR fd_info =
+        {
+            .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+            .semaphore = host_semaphore,
+            .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+        };
         if ((fd_info.fd = d3dkmt_object_get_fd( sync )) < 0) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
         return device->p_vkImportSemaphoreFdKHR( device->host.device, &fd_info );
     }
 
     default:
-        FIXME( "Unsupported semaphore handle type %#x\n", type );
+        FIXME( "Unsupported semaphore fd type %#x\n", desc.type );
         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
     }
 }
@@ -947,14 +950,14 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
 
     if (import_win32)
     {
-        VkExternalMemoryHandleTypeFlagBits type;
+        struct fd_desc desc;
 
         switch (import_win32->handleType)
         {
         case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT:
         case VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT:
             memory->global = PtrToUlong( import_win32->handle );
-            memory->local = d3dkmt_open_resource( memory->global, NULL, &memory->mutex, &memory->sync );
+            memory->local = d3dkmt_open_resource( memory->global, NULL, &desc, &memory->mutex, &memory->sync );
             break;
         case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT:
         case VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT:
@@ -963,7 +966,7 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
         {
             HANDLE shared = import_win32->handle;
             if (import_win32->name && !(shared = open_shared_resource_from_name( import_win32->name ))) break;
-            memory->local = d3dkmt_open_resource( 0, shared, &memory->mutex, &memory->sync );
+            memory->local = d3dkmt_open_resource( 0, shared, &desc, &memory->mutex, &memory->sync );
             if (shared && shared != import_win32->handle) NtClose( shared );
             break;
         }
@@ -976,26 +979,27 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
         {
             VkSemaphoreTypeCreateInfo semaphore_type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
             VkSemaphoreCreateInfo semaphore_create = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &semaphore_type};
+            struct fd_desc sync_desc = d3dkmt_object_get_fd_desc( memory->sync );
 
             semaphore_type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
             if ((res = device->p_vkCreateSemaphore( device->host.device, &semaphore_create, NULL, &memory->semaphore ))) goto failed;
-            if ((res = import_semaphore_from_d3dkmt_sync( device, memory->sync, memory->semaphore ))) goto failed;
+            if ((res = import_semaphore_from_d3dkmt_sync( device, memory->sync, memory->semaphore, sync_desc ))) goto failed;
         }
 
-        switch ((type = get_host_external_memory_type()))
+        switch (desc.type)
         {
-        case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
+        case FD_OPAQUE:
             if ((fd_info.fd = d3dkmt_object_get_fd( memory->local )) < 0)
             {
                 res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
                 goto failed;
             }
-            fd_info.handleType = type;
+            fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
             fd_info.pNext = alloc_info->pNext;
             alloc_info->pNext = &fd_info;
             break;
         default:
-            FIXME( "Unsupported memory handle type %#x\n", type );
+            FIXME( "Unsupported memory fd type %#x\n", desc.type );
             break;
         }
     }
@@ -1007,6 +1011,7 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
         if (!memory->local)
         {
             VkExternalMemoryHandleTypeFlagBits type;
+            struct fd_desc desc = {0};
             int fd = -1;
 
             switch ((type = get_host_external_memory_type()))
@@ -1015,6 +1020,7 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
             {
                 VkMemoryGetFdInfoKHR get_fd_info = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = host_device_memory, .handleType = type};
                 if ((res = device->p_vkGetMemoryFdKHR( device->host.device, &get_fd_info, &fd ))) goto failed;
+                desc.type = FD_OPAQUE;
                 break;
             }
             default:
@@ -1022,7 +1028,7 @@ static VkResult win32u_vkAllocateMemory( VkDevice client_device, const VkMemoryA
                 break;
             }
 
-            memory->local = d3dkmt_create_resource( fd, nt_shared ? NULL : &memory->global );
+            memory->local = d3dkmt_create_resource( fd, desc, nt_shared ? NULL : &memory->global );
             close( fd );
 
             if (!memory->local) goto failed;
@@ -1600,9 +1606,17 @@ static void win32u_vkDestroySurfaceKHR( VkInstance client_instance, VkSurfaceKHR
     free( surface );
 }
 
-static BOOL get_surface_rect( HWND hwnd, RECT *rect, struct ratio dpi )
+static BOOL get_surface_rect( HWND hwnd, RECT *rect, BOOL raw )
 {
+    UINT dpi = get_dpi_for_window( hwnd );
+
     if (!get_present_rect( hwnd, rect, dpi ) && !get_client_rect( hwnd, rect, dpi )) return FALSE;
+    if (raw)
+    {
+        struct ratio scale = get_win_monitor_scale( hwnd );
+        *rect = map_dpi_rect( *rect, dpi * scale.den, scale.num );
+    }
+
     OffsetRect( rect, -rect->left, -rect->top );
     return TRUE;
 }
@@ -1623,7 +1637,7 @@ static void adjust_surface_capabilities( struct vulkan_instance *instance, struc
 
     /* Update the image extents to match what the Win32 WSI would provide. */
     /* FIXME: handle DPI scaling, somehow */
-    get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) );
+    get_surface_rect( surface->hwnd, &client_rect, FALSE );
     capabilities->minImageExtent.width = client_rect.right - client_rect.left;
     capabilities->minImageExtent.height = client_rect.bottom - client_rect.top;
     capabilities->maxImageExtent.width = client_rect.right - client_rect.left;
@@ -1881,7 +1895,6 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     VkSwapchainCreateInfoKHR create_info_host = *create_info;
     VkSurfaceCapabilitiesKHR capabilities;
     VkSwapchainKHR host_swapchain;
-    struct ratio raw_dpi;
     RECT client_rect;
     VkResult res;
 
@@ -1910,8 +1923,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
      * display mode change emulation), MoltenVK's vkQueuePresentKHR returns VK_SUBOPTIMAL_KHR.
      * Create the swapchain with VkSwapchainPresentScalingCreateInfoEXT to avoid this.
      */
-    get_win_monitor_dpi( surface->hwnd, &raw_dpi );
-    if (get_surface_rect( surface->hwnd, &client_rect, raw_dpi ) &&
+    if (get_surface_rect( surface->hwnd, &client_rect, TRUE ) &&
         !extents_equals( &create_info_host.imageExtent, &client_rect ) &&
         instance->extensions.has_VK_EXT_surface_maintenance1 &&
         physical_device->extensions.has_VK_KHR_swapchain_maintenance1)
@@ -1970,7 +1982,7 @@ static VkResult win32u_vkAcquireNextImage2KHR( VkDevice client_device, const VkA
     acquire_info_host.fence = fence ? fence->host.fence : 0;
     res = device->p_vkAcquireNextImage2KHR( device->host.device, &acquire_info_host, image_index );
 
-    if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+    if (!res && get_surface_rect( surface->hwnd, &client_rect, FALSE ) &&
         !extents_equals( &swapchain->extents, &client_rect ))
     {
         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
@@ -1996,7 +2008,7 @@ static VkResult win32u_vkAcquireNextImageKHR( VkDevice client_device, VkSwapchai
                                               semaphore ? semaphore->host.semaphore : 0, fence ? fence->host.fence : 0,
                                               image_index );
 
-    if (!res && get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ) &&
+    if (!res && get_surface_rect( surface->hwnd, &client_rect, FALSE ) &&
         !extents_equals( &swapchain->extents, &client_rect ))
     {
         WARN( "Swapchain size %dx%d does not match client rect %s, returning VK_SUBOPTIMAL_KHR\n",
@@ -2057,7 +2069,7 @@ static VkResult win32u_vkQueuePresentKHR( VkQueue client_queue, const VkPresentI
         client_surface_present( surface->client );
 
         if (swapchain_res < VK_SUCCESS) continue;
-        if (!get_surface_rect( surface->hwnd, &client_rect, get_dpi_for_window( surface->hwnd ) ))
+        if (!get_surface_rect( surface->hwnd, &client_rect, FALSE ))
         {
             WARN( "Swapchain window %p is invalid, returning VK_ERROR_OUT_OF_DATE_KHR\n", surface->hwnd );
             if (present_info->pResults) present_info->pResults[i] = VK_ERROR_OUT_OF_DATE_KHR;
@@ -2540,6 +2552,7 @@ static VkResult win32u_vkCreateSemaphore( VkDevice client_device, const VkSemaph
     if (export_info)
     {
         VkExternalSemaphoreHandleTypeFlagBits type;
+        struct fd_desc desc = {0};
         int fd = -1;
 
         switch ((type = get_host_external_semaphore_type()))
@@ -2548,6 +2561,7 @@ static VkResult win32u_vkCreateSemaphore( VkDevice client_device, const VkSemaph
         {
             VkSemaphoreGetFdInfoKHR fd_info = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, .semaphore = host_semaphore, .handleType = type};
             if ((res = device->p_vkGetSemaphoreFdKHR( device->host.device, &fd_info, &fd ))) goto failed;
+            desc.type = FD_OPAQUE;
             break;
         }
         default:
@@ -2555,7 +2569,7 @@ static VkResult win32u_vkCreateSemaphore( VkDevice client_device, const VkSemaph
             break;
         }
 
-        semaphore->local = d3dkmt_create_sync( fd, nt_shared ? NULL : &semaphore->global );
+        semaphore->local = d3dkmt_create_sync( fd, desc, nt_shared ? NULL : &semaphore->global );
         close( fd );
 
         if (!semaphore->local) goto failed;
@@ -2628,6 +2642,7 @@ static VkResult win32u_vkImportSemaphoreWin32HandleKHR( VkDevice client_device, 
     D3DKMT_HANDLE local, global = 0;
     VkResult res = VK_SUCCESS;
     HANDLE shared = NULL;
+    struct fd_desc desc;
 
     TRACE( "device %p, handle_info %p\n", device, handle_info );
 
@@ -2635,7 +2650,7 @@ static VkResult win32u_vkImportSemaphoreWin32HandleKHR( VkDevice client_device, 
     {
     case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT:
         global = PtrToUlong( handle_info->handle );
-        if (!(local = d3dkmt_open_sync( global, NULL ))) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+        if (!(local = d3dkmt_open_sync( global, NULL, &desc ))) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
         break;
     case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT:
     case VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT:
@@ -2645,7 +2660,7 @@ static VkResult win32u_vkImportSemaphoreWin32HandleKHR( VkDevice client_device, 
                                                                        0, 0, DUPLICATE_SAME_ATTRIBUTES | DUPLICATE_SAME_ACCESS ))
             return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 
-        if (!(local = d3dkmt_open_sync( 0, shared )))
+        if (!(local = d3dkmt_open_sync( 0, shared, &desc )))
         {
             NtClose( shared );
             return VK_ERROR_INVALID_EXTERNAL_HANDLE;
@@ -2684,7 +2699,7 @@ static VkResult win32u_vkImportSemaphoreWin32HandleKHR( VkDevice client_device, 
         }
     }
 
-    res = import_semaphore_from_d3dkmt_sync( device, local, semaphore->obj.host.semaphore );
+    res = import_semaphore_from_d3dkmt_sync( device, local, semaphore->obj.host.semaphore, desc );
     if (res || handle_info->flags & VK_SEMAPHORE_IMPORT_TEMPORARY_BIT)
     {
         /* FIXME: Should we still keep the temporary handles for vkGetSemaphoreWin32HandleKHR? */
@@ -2791,6 +2806,7 @@ static VkResult win32u_vkCreateFence( VkDevice client_device, const VkFenceCreat
     if (export_info)
     {
         VkExternalFenceHandleTypeFlagBits type;
+        struct fd_desc desc = {0};
         int fd = -1;
 
         switch ((type = get_host_external_fence_type()))
@@ -2799,6 +2815,7 @@ static VkResult win32u_vkCreateFence( VkDevice client_device, const VkFenceCreat
         {
             VkFenceGetFdInfoKHR fd_info = {.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR, .fence = host_fence, .handleType = type};
             if ((res = device->p_vkGetFenceFdKHR( device->host.device, &fd_info, &fd ))) goto failed;
+            desc.type = FD_OPAQUE;
             break;
         }
         default:
@@ -2806,7 +2823,7 @@ static VkResult win32u_vkCreateFence( VkDevice client_device, const VkFenceCreat
             break;
         }
 
-        fence->local = d3dkmt_create_sync( fd, nt_shared ? NULL : &fence->global );
+        fence->local = d3dkmt_create_sync( fd, desc, nt_shared ? NULL : &fence->global );
         close( fd );
 
         if (!fence->local) goto failed;
@@ -2870,21 +2887,24 @@ static VkResult win32u_vkGetFenceWin32HandleKHR( VkDevice client_device, const V
     }
 }
 
-static VkResult import_fence_from_d3dkmt_sync( struct vulkan_device *device, D3DKMT_HANDLE sync, VkFence host_fence )
+static VkResult import_fence_from_d3dkmt_sync( struct vulkan_device *device, D3DKMT_HANDLE sync, VkFence host_fence, struct fd_desc desc )
 {
-    VkExternalFenceHandleTypeFlagBits type;
-
-    switch ((type = get_host_external_fence_type()))
+    switch (desc.type)
     {
-    case VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT:
+    case FD_OPAQUE:
     {
-        VkImportFenceFdInfoKHR fd_info = {.sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR, .fence = host_fence, .handleType = type};
+        VkImportFenceFdInfoKHR fd_info =
+        {
+            .sType = VK_STRUCTURE_TYPE_IMPORT_FENCE_FD_INFO_KHR,
+            .fence = host_fence,
+            .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_FD_BIT,
+        };
         if ((fd_info.fd = d3dkmt_object_get_fd( sync )) < 0) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
         return device->p_vkImportFenceFdKHR( device->host.device, &fd_info );
     }
 
     default:
-        FIXME( "Unsupported fence handle type %#x\n", type );
+        FIXME( "Unsupported fence fd type %#x\n", desc.type );
         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
     }
 }
@@ -2895,6 +2915,7 @@ static VkResult win32u_vkImportFenceWin32HandleKHR( VkDevice client_device, cons
     struct fence *fence = fence_from_handle( handle_info->fence );
     D3DKMT_HANDLE local, global = 0;
     HANDLE shared = NULL;
+    struct fd_desc desc;
     VkResult res;
 
     TRACE( "device %p, handle_info %p\n", device, handle_info );
@@ -2903,7 +2924,7 @@ static VkResult win32u_vkImportFenceWin32HandleKHR( VkDevice client_device, cons
     {
     case VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT:
         global = PtrToUlong( handle_info->handle );
-        if (!(local = d3dkmt_open_sync( global, NULL ))) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+        if (!(local = d3dkmt_open_sync( global, NULL, &desc ))) return VK_ERROR_INVALID_EXTERNAL_HANDLE;
         break;
     case VK_EXTERNAL_FENCE_HANDLE_TYPE_OPAQUE_WIN32_BIT:
         if (handle_info->name && !(shared = open_shared_semaphore_from_name( handle_info->name )))
@@ -2912,7 +2933,7 @@ static VkResult win32u_vkImportFenceWin32HandleKHR( VkDevice client_device, cons
                                                                        0, 0, DUPLICATE_SAME_ATTRIBUTES | DUPLICATE_SAME_ACCESS ))
             return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 
-        if (!(local = d3dkmt_open_sync( 0, shared )))
+        if (!(local = d3dkmt_open_sync( 0, shared, &desc )))
         {
             NtClose( shared );
             return VK_ERROR_INVALID_EXTERNAL_HANDLE;
@@ -2923,7 +2944,7 @@ static VkResult win32u_vkImportFenceWin32HandleKHR( VkDevice client_device, cons
         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
     }
 
-    res = import_fence_from_d3dkmt_sync( device, local, fence->obj.host.fence );
+    res = import_fence_from_d3dkmt_sync( device, local, fence->obj.host.fence, desc );
     if (res || handle_info->flags & VK_FENCE_IMPORT_TEMPORARY_BIT)
     {
         /* FIXME: Should we still keep the temporary handles for vkGetFenceWin32HandleKHR? */

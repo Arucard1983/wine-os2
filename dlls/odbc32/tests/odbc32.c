@@ -231,8 +231,8 @@ static SQLRETURN WINAPI driver_SQLDriverConnect( SQLHDBC con, SQLHWND win,
     ok( (ULONG_PTR)con == SQL_HANDLE_DBC, "con = %p\n", con );
     ok( !win, "win = %p\n", win );
     todo_wine ok( in_con_len == SQL_NTS, "in_con_len = %d\n", in_con_len );
-    todo_wine ok( !strcmp((char *)in_con, "DSN=winetest_dsn;UID=winetest;")
-            || !strcmp((char *)in_con, "DSN=winetest_dsn;"), "in_con = %s\n", in_con );
+    ok( !strcmp((char *)in_con, "DSN=winetest_dsn;UID=winetest;") ||
+        !strcmp((char *)in_con, "DSN=winetest_dsn;"), "in_con = %s\n", in_con );
     ok( out_con != NULL, "out_con = %p\n", out_con );
     ok( out_con_max_len == 256, "out_con_max_len = %d\n", out_con_max_len );
     ok( out_con_len != NULL, "out_con_len = %p\n", out_con_len );
@@ -249,8 +249,8 @@ static SQLRETURN WINAPI driver_SQLBrowseConnect( SQLHDBC con, SQLCHAR *in_con,
 {
     CHECK_EXPECT( driver_SQLBrowseConnect );
     ok( (ULONG_PTR)con == SQL_HANDLE_DBC, "con = %p\n", con );
-    todo_wine ok( in_con_len == 17, "in_con_len = %d\n", in_con_len );
-    todo_wine ok( !strncmp((char *)in_con, "DSN=winetest_dsn;", 17), "in_con = %s\n", in_con );
+    ok( in_con_len == 17, "in_con_len = %d\n", in_con_len );
+    ok( !strncmp((char *)in_con, "DSN=winetest_dsn;", 17), "in_con = %s\n", in_con );
     ok( out_con != NULL, "out_con = %p\n", out_con );
     ok( out_con_max_len == 256, "out_con_max_len = %d\n", out_con_max_len );
     ok( out_con_len != NULL, "out_con_len = %p\n", out_con_len );
@@ -558,7 +558,7 @@ static SQLRETURN WINAPI driver_SQLDescribeCol( SQLHSTMT stmt, SQLUSMALLINT col,
     default:
         ok( !name, "name = %p\n", name );
         ok( !max_len, "max_len = %d\n", max_len );
-        todo_wine ok( len != NULL, "len = %p\n", len );
+        ok( len != NULL, "len = %p\n", len );
         *type = col;
         break;
     }
@@ -880,8 +880,8 @@ static void test_SQLDriverConnect( void )
     SET_EXPECT( driver_SQLDriverConnect );
     SET_EXPECT( driver_SQLGetDiagRec );
     SET_EXPECT( driver_SQLGetInfo );
-    ret = SQLDriverConnect( con, NULL, (SQLCHAR *)"dsn=winetest_dsn;UID=winetest",
-                            strlen("dsn=winetest_dsn;UID=winetest"), str, sizeof(str), &len, 0 );
+    ret = SQLDriverConnect( con, NULL, (SQLCHAR *)";dsn=winetest_dsn;;UID=winetest;;",
+                            strlen(";dsn=winetest_dsn;;UID=winetest;;"), str, sizeof(str), &len, 0 );
     CHECK_CALLED( driver_SQLAllocHandle_env );
     CHECK_CALLED( driver_SQLSetEnvAttr );
     CHECK_CALLED( driver_SQLAllocHandle_con );
@@ -891,10 +891,8 @@ static void test_SQLDriverConnect( void )
     todo_wine CHECK_CALLED( driver_SQLGetInfo );
     ok( ret == SQL_SUCCESS, "got %d\n", ret );
     if (ret == SQL_ERROR) diag( con, SQL_HANDLE_DBC );
-    todo_wine {
     ok( !strcmp( (const char *)str, "DSN=winetest_dsn;UID=winetest;" ), "got '%s'\n", str );
     ok( len == 30, "got %d\n", len );
-    }
 
     SET_EXPECT( driver_SQLDisconnect );
     ret = SQLDisconnect( con );
@@ -915,10 +913,8 @@ static void test_SQLDriverConnect( void )
     todo_wine CHECK_CALLED( driver_SQLGetDiagRec );
     todo_wine CHECK_CALLED( driver_SQLGetInfo );
     ok( ret == SQL_SUCCESS, "got %d\n", ret );
-    todo_wine {
     ok( !strcmp( (const char *)str, "DSN=winetest_dsn;" ), "got '%s'\n", str );
     ok( len == 17, "got %d\n", len );
-    }
 
     SET_EXPECT( driver_SQLDisconnect );
     ret = SQLDisconnect( con );
@@ -969,8 +965,8 @@ static void test_SQLBrowseConnect( void )
     todo_wine CHECK_CALLED( driver_SQLGetInfo );
     ok( ret == SQL_SUCCESS, "got %d\n", ret );
     if (ret == SQL_ERROR) diag( con, SQL_HANDLE_DBC );
-    todo_wine ok( !strncmp( (const char *)str, "DSN=winetest_dsn;", 17 ), "got '%s'\n", str );
-    todo_wine ok( len == 17, "got %d\n", len );
+    ok( !strncmp( (const char *)str, "DSN=winetest_dsn;", 17 ), "got '%s'\n", str );
+    ok( len == 17, "got %d\n", len );
 
     SET_EXPECT( driver_SQLDisconnect );
     ret = SQLDisconnect( con );
@@ -1073,6 +1069,7 @@ static void test_SQLExecDirect( void )
     SQLULEN rows_fetched;
     SQLINTEGER id[2], err, size;
     SQLCHAR name[32], msg[256], state[6];
+    SQLWCHAR nameW[32];
     SQLSMALLINT len, type;
 
     ret = SQLAllocEnv( &env );
@@ -1141,6 +1138,14 @@ static void test_SQLExecDirect( void )
     ok( type == SQL_INTEGER, "type = %d\n", type );
 
     SET_EXPECT( driver_SQLDescribeCol );
+    ret = SQLDescribeColW( stmt, 1, nameW, ARRAY_SIZE(nameW), &len, &type, NULL, NULL, NULL );
+    CHECK_CALLED( driver_SQLDescribeCol );
+    ok( ret == SQL_SUCCESS, "got %d\n", ret );
+    ok( len == 2, "len = %d\n", len );
+    ok( !strcmp((char *)name, "Id"), "name = %s\n", wine_dbgstr_an((char *)name, len) );
+    ok( type == SQL_INTEGER, "type = %d\n", type );
+
+    SET_EXPECT( driver_SQLDescribeCol );
     ret = SQLDescribeCol( stmt, SQL_DATE, NULL, 0, NULL, &type, NULL, NULL, NULL );
     CHECK_CALLED( driver_SQLDescribeCol );
     ok( ret == SQL_SUCCESS, "got %d\n", ret );
@@ -1148,6 +1153,12 @@ static void test_SQLExecDirect( void )
 
     SET_EXPECT( driver_SQLDescribeCol );
     ret = SQLDescribeCol( stmt, SQL_TYPE_DATE, NULL, 0, NULL, &type, NULL, NULL, NULL );
+    CHECK_CALLED( driver_SQLDescribeCol );
+    ok( ret == SQL_SUCCESS, "got %d\n", ret );
+    ok( type == SQL_DATE, "type = %d\n", type );
+
+    SET_EXPECT( driver_SQLDescribeCol );
+    ret = SQLDescribeColW( stmt, SQL_DATE, NULL, 0, NULL, &type, NULL, NULL, NULL );
     CHECK_CALLED( driver_SQLDescribeCol );
     ok( ret == SQL_SUCCESS, "got %d\n", ret );
     ok( type == SQL_DATE, "type = %d\n", type );

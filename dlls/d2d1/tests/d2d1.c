@@ -11828,6 +11828,8 @@ static void check_system_properties_(unsigned int line, ID2D1Effect *effect)
     ok_(__FILE__, line)(type == D2D1_PROPERTY_TYPE_UNKNOWN, "Got unexpected property type %#x for 0xdeadbeef.\n", type);
     value_size = ID2D1Effect_GetValueSize(effect, 0xdeadbeef);
     ok_(__FILE__, line)(value_size == 0, "Got unexpected value size %u for 0xdeadbeef.\n", value_size);
+    count = ID2D1Effect_GetPropertyNameLength(effect, 0xdeadbeef);
+    ok_(__FILE__, line)(!count, "Got unexpected property name length %u.\n", count);
 
     for (i = 0; i < ARRAY_SIZE(system_property_tests); ++i)
     {
@@ -16781,6 +16783,10 @@ static void test_get_effect_properties(BOOL d3d11)
 
     count = ID2D1Properties_GetPropertyNameLength(properties, 0);
     ok(count == 4, "Unexpected name length %u.\n", count);
+    count = ID2D1Properties_GetPropertyNameLength(properties, 1);
+    ok(count == 10, "Unexpected name length %u.\n", count);
+    count = ID2D1Properties_GetPropertyNameLength(properties, 2);
+    ok(!count, "Unexpected name length %u.\n", count);
 
     type = ID2D1Properties_GetType(properties, 0);
     ok(type == D2D1_PROPERTY_TYPE_VECTOR4, "Unexpected property type %u.\n", type);
@@ -18164,6 +18170,12 @@ static void test_sprite_batch(BOOL d3d11)
         return;
 
     hr = ID2D1DeviceContext_QueryInterface(ctx.context, &IID_ID2D1DeviceContext3, (void **)&context);
+    if (hr == E_NOINTERFACE)
+    {
+        win_skip("Sprite batches are not supported.\n");
+        release_test_context(&ctx);
+        return;
+    }
     ok(hr == S_OK, "Got unexpected hr %#lx.\n", hr);
 
     hr = ID2D1DeviceContext3_CreateSpriteBatch(context, &sprite_batch);

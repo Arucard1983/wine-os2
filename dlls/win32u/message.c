@@ -47,8 +47,6 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
 
 static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
 
-static const struct ratio no_dpi;
-
 static LONG atomic_load_long( const volatile LONG *ptr )
 {
 #if defined(__i386__) || defined(__x86_64__)
@@ -2204,7 +2202,7 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     {
         HWND prev;
 
-        if (!wparam && NtUserGetForegroundWindow() == hwnd) return 0;
+        if (!wparam && get_window_thread( NtUserGetForegroundWindow(), NULL ) == GetCurrentThreadId()) return 0;
         if (!set_active_window( (HWND)wparam, &prev, FALSE, TRUE, lparam )) return 0;
         return (LRESULT)prev;
     }
@@ -2265,6 +2263,14 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     case WM_WINE_UPDATEWINDOWSTATE:
         update_window_state( hwnd );
         return 0;
+    case WM_WINE_SWAPCHAIN_CREATE:
+        return create_opengl_swapchain( hwnd, (HWND)wparam );
+    case WM_WINE_SWAPCHAIN_PRESENT:
+        return present_opengl_swapchain( hwnd, wparam, lparam );
+    case WM_WINE_SWAPCHAIN_DESTROY:
+        return destroy_opengl_swapchain( hwnd, wparam );
+    case WM_WINE_SWAPCHAIN_INVALIDATE:
+        return invalidate_opengl_swapchains( hwnd, (HWND)wparam );
     case WM_WINE_SETPIXELFORMAT:
         set_window_pixel_format( hwnd, wparam, lparam );
         return 0;
@@ -3123,7 +3129,7 @@ static int peek_message( MSG *msg, const struct peek_message_filter *filter )
                 RECT rect = {info.msg.pt.x, info.msg.pt.y, info.msg.pt.x, info.msg.pt.y};
                 MSLLHOOKSTRUCT hook;
 
-                rect = map_rect_raw_to_virt( rect, no_dpi );
+                rect = map_rect_raw_to_virt( rect, 0 );
                 info.msg.pt.x = rect.left;
                 info.msg.pt.y = rect.top;
 
@@ -4288,6 +4294,28 @@ static LRESULT call_messageAtoW( winproc_callback_t callback, HWND hwnd, UINT ms
                 str[len] = 0;
                 *result = len;
             }
+            free_buffer( buffer, ptr );
+        }
+        break;
+
+    case LB_GETTEXT:
+        {
+            LPSTR str = (LPSTR)lparam;
+            WCHAR *ptr, buffer[512];
+            DWORD len;
+
+            if (!listbox_has_strings( hwnd ))
+            {
+                ret = callback( hwnd, msg, wparam, lparam, result, arg );
+                break;
+            }
+
+            len = send_message( hwnd, LB_GETTEXTLEN, wparam, 0 );
+            if (!(ptr = get_buffer( buffer, sizeof(buffer), (len + 1) * sizeof(WCHAR) ))) break;
+            ret = callback( hwnd, msg, wparam, (LPARAM)ptr, result, arg );
+            len = *result ? win32u_wctomb( &ansi_cp, str, -1, ptr, *result ) : 0;
+            str[len] = 0;
+            *result = len;
             free_buffer( buffer, ptr );
         }
         break;

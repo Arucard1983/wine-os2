@@ -178,6 +178,21 @@ static void dump_ratio( const char *prefix, const struct ratio *q )
     fprintf( stderr, "%s{%d:%d}", prefix, q->num, q->den );
 }
 
+static void dump_fd_desc( const char *prefix, const struct fd_desc *desc )
+{
+    fprintf( stderr, "%s{type=%d,format=%#x", prefix, desc->type, desc->format );
+
+    switch (desc->type)
+    {
+    case FD_DMA_BUF:
+        dump_uint64( ",modifier=", &desc->dma_buf.modifier );
+        fprintf( stderr, ",offset=%d,stride=%d", desc->dma_buf.offset, desc->dma_buf.stride );
+        break;
+    }
+
+    fprintf( stderr, "}" );
+}
+
 static void dump_ioctl_code( const char *prefix, const ioctl_code_t *code )
 {
     switch(*code)
@@ -438,6 +453,11 @@ static void dump_irp_params( const char *prefix, const union irp_params *data )
         fprintf( stderr, "%s{WRITE,key=%08x", prefix, data->write.key );
         dump_uint64( ",pos=", &data->write.pos );
         dump_uint64( ",file=", &data->write.file );
+        fputc( '}', stderr );
+        break;
+    case IRP_CALL_SET_INFO:
+        fprintf( stderr, "%s{SET_INFO,class=%08x", prefix, data->set_info.class );
+        dump_uint64( ",file=", &data->set_info.file );
         fputc( '}', stderr );
         break;
     case IRP_CALL_FLUSH:
@@ -751,11 +771,11 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
         if (ctx.flags & SERVER_CTX_EXTENDED_REGISTERS)
             dump_uints( ",extended=", (const unsigned int *)ctx.ext.i386_regs,
                         sizeof(ctx.ext.i386_regs) / sizeof(int) );
-        if (ctx.flags & SERVER_CTX_YMM_REGISTERS)
+        if (ctx.flags & SERVER_CTX_VECTOR_REGISTERS)
             for (i = 0; i < 16; i++)
             {
                 fprintf( stderr, ",ymm%u=", i );
-                dump_uint128( "", (const unsigned __int64 *)&ctx.ymm.regs.ymm_high[i] );
+                dump_uint128( "", (const unsigned __int64 *)&ctx.vector.ymm_regs.ymm_high[i] );
             }
         break;
     case IMAGE_FILE_MACHINE_AMD64:
@@ -804,11 +824,11 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
                 fprintf( stderr, ",fp%u=", i );
                 dump_uint128( "", (const unsigned __int64 *)&ctx.fp.x86_64_regs.fpregs[i] );
             }
-        if (ctx.flags & SERVER_CTX_YMM_REGISTERS)
+        if (ctx.flags & SERVER_CTX_VECTOR_REGISTERS)
             for (i = 0; i < 16; i++)
             {
                 fprintf( stderr, ",ymm%u=", i );
-                dump_uint128( "", (const unsigned __int64 *)&ctx.ymm.regs.ymm_high[i] );
+                dump_uint128( "", (const unsigned __int64 *)&ctx.vector.ymm_regs.ymm_high[i] );
             }
         break;
     case IMAGE_FILE_MACHINE_ARMNT:
@@ -880,12 +900,24 @@ static void dump_varargs_context( const char *prefix, data_size_t size )
         }
         if (ctx.flags & SERVER_CTX_FLOATING_POINT)
         {
-            for (i = 0; i < 32; i++)
+            for (i = 0; i < 16; i++)
             {
                 fprintf( stderr, ",q%u=", i );
                 dump_uint64( "", &ctx.fp.arm64_regs.q[i].high );
                 dump_uint64( "", &ctx.fp.arm64_regs.q[i].low );
             }
+        }
+        if (ctx.flags & SERVER_CTX_VECTOR_REGISTERS)
+        {
+            for (i = 0; i < 16; i++)
+            {
+                fprintf( stderr, ",q%u=", i + 16 );
+                dump_uint64( "", &ctx.vector.arm64_regs.q16[i].high );
+                dump_uint64( "", &ctx.vector.arm64_regs.q16[i].low );
+            }
+        }
+        if (ctx.flags & SERVER_CTX_FLOATING_POINT)
+        {
             fprintf( stderr, ",fpcr=%08x,fpsr=%08x", ctx.fp.arm64_regs.fpcr, ctx.fp.arm64_regs.fpsr );
         }
         break;
@@ -1661,10 +1693,9 @@ static void dump_varargs_monitor_infos( const char *prefix, data_size_t size )
     fprintf( stderr,"%s{", prefix );
     while (len > 0)
     {
-        dump_rectangle( "{raw:", &monitor->virt );
+        dump_rectangle( "{raw:", &monitor->raw );
         dump_rectangle( ",virt:", &monitor->virt );
-        fprintf( stderr, ",flags:%#x", monitor->flags );
-        dump_ratio( ",dpi:", &monitor->dpi );
+        fprintf( stderr, ",flags:%#x,dpi:%u", monitor->flags, monitor->dpi );
         fputc( '}', stderr );
         if (--len) fputc( ',', stderr );
     }

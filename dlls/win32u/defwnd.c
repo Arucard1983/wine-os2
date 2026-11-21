@@ -37,7 +37,6 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
 #define KEYDATA_ALT             0x2000
 #define KEYDATA_PREVSTATE       0x4000
 
-static const struct ratio no_dpi;
 static short f10_key = 0;
 static short menu_sys_key = 0;
 
@@ -683,7 +682,7 @@ static void sys_command_size_move( HWND hwnd, WPARAM wparam )
     UINT style = get_window_long( hwnd, GWL_STYLE );
     POINT capture_point, pt;
     MINMAXINFO minmax;
-    struct ratio dpi;
+    UINT dpi;
     HWND parent;
     HDC hdc;
     MSG msg;
@@ -976,7 +975,7 @@ static LRESULT handle_sys_command( HWND hwnd, WPARAM wparam, LPARAM lparam )
     pos.y = (short)HIWORD( msgpos );
     NtUserLogicalToPerMonitorDPIPhysicalPoint( hwnd, &pos );
     SetRect( &rect, pos.x, pos.y, pos.x, pos.y );
-    rect = map_rect_virt_to_raw( rect, no_dpi );
+    rect = map_rect_virt_to_raw( rect, 0 );
     pos.x = rect.left;
     pos.y = rect.top;
 
@@ -3007,16 +3006,6 @@ LRESULT default_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, 
     return result;
 }
 
-static void update_children_window_state( HWND hwnd )
-{
-    HWND *children;
-    int i;
-
-    if (!(children = list_window_children( hwnd ))) return;
-    for (i = 0; children[i]; i++) update_window_state( children[i] );
-    free( children );
-}
-
 LRESULT desktop_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, BOOL ansi )
 {
     static const WCHAR wine_display_device_guidW[] =
@@ -3052,8 +3041,9 @@ LRESULT desktop_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, 
     case WM_DISPLAYCHANGE:
     {
         static RECT virtual_rect = {INT_MIN,INT_MIN,INT_MAX,INT_MAX};
+        HWND *children;
 
-        RECT new_rect = get_virtual_screen_rect( no_dpi, MDT_DEFAULT ), old_rect = virtual_rect;
+        RECT new_rect = get_virtual_screen_rect( 0, MDT_DEFAULT ), old_rect = virtual_rect;
         UINT context, flags = 0;
 
         if (EqualRect( &new_rect, &old_rect )) return TRUE;
@@ -3073,7 +3063,14 @@ LRESULT desktop_window_proc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, 
                             flags | SWP_NOZORDER | SWP_NOACTIVATE | SWP_DEFERERASE );
         NtUserSetThreadDpiAwarenessContext( context );
 
-        update_children_window_state( hwnd );
+        /* invalidate and update toplevel window positions for the new display settings */
+        children = list_window_children( hwnd );
+        for (int i = 0; children && children[i]; i++)
+        {
+            NtUserRedrawWindow( children[i], NULL, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN );
+            update_window_state( children[i] );
+        }
+        free( children );
 
         return 0;
     }

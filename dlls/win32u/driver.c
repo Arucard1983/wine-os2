@@ -36,7 +36,6 @@
 WINE_DEFAULT_DEBUG_CHANNEL(driver);
 WINE_DECLARE_DEBUG_CHANNEL(winediag);
 
-static const struct ratio no_dpi;
 static const struct user_driver_funcs lazy_load_driver;
 static struct user_driver_funcs null_user_driver;
 static WCHAR driver_load_error[80];
@@ -253,14 +252,14 @@ static INT nulldrv_GetDeviceCaps( PHYSDEV dev, INT cap )
     case DESKTOPHORZRES:
         if (NtGdiGetDeviceCaps( dev->hdc, TECHNOLOGY ) == DT_RASDISPLAY)
         {
-            RECT rect = get_virtual_screen_rect( no_dpi, MDT_DEFAULT );
+            RECT rect = get_virtual_screen_rect( 0, MDT_DEFAULT );
             return rect.right - rect.left;
         }
         return NtGdiGetDeviceCaps( dev->hdc, HORZRES );
     case DESKTOPVERTRES:
         if (NtGdiGetDeviceCaps( dev->hdc, TECHNOLOGY ) == DT_RASDISPLAY)
         {
-            RECT rect = get_virtual_screen_rect( no_dpi, MDT_DEFAULT );
+            RECT rect = get_virtual_screen_rect( 0, MDT_DEFAULT );
             return rect.bottom - rect.top;
         }
         return NtGdiGetDeviceCaps( dev->hdc, VERTRES );
@@ -1123,7 +1122,7 @@ static const KBDTABLES *loaderdrv_KbdLayerDescriptor( HKL layout )
 
 static void loaderdrv_ReleaseKbdTables( const KBDTABLES *tables )
 {
-    return load_driver()->pReleaseKbdTables( tables );
+    load_driver()->pReleaseKbdTables( tables );
 }
 
 static UINT loaderdrv_ImeToAsciiEx( UINT vkey, UINT vsc,const BYTE *state, void *update )
@@ -1133,7 +1132,7 @@ static UINT loaderdrv_ImeToAsciiEx( UINT vkey, UINT vsc,const BYTE *state, void 
 
 static void loaderdrv_NotifyIMEStatus( HWND hwnd, UINT status )
 {
-    return load_driver()->pNotifyIMEStatus( hwnd, status );
+    load_driver()->pNotifyIMEStatus( hwnd, status );
 }
 
 static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )

@@ -816,6 +816,7 @@ void wined3d_context_vk_image_barrier(struct wined3d_context_vk *context_vk,
         VkImageLayout new_layout, VkImage image, const VkImageSubresourceRange *range);
 HRESULT wined3d_context_vk_init(struct wined3d_context_vk *context_vk,
         struct wined3d_swapchain *swapchain);
+void wined3d_context_vk_remove_graphics_pipelines(struct wined3d_context_vk *context_vk, VkShaderModule vk_module);
 void wined3d_context_vk_submit_command_buffer(struct wined3d_context_vk *context_vk,
         unsigned int wait_semaphore_count, const VkSemaphore *wait_semaphores, const VkPipelineStageFlags *wait_stages,
         unsigned int signal_semaphore_count, const VkSemaphore *signal_semaphores);
@@ -988,6 +989,7 @@ struct wined3d_texture_vk
     struct wined3d_image_vk image;
     enum VkImageLayout layout;
     uint32_t bind_mask;
+    uint64_t image_generation;
 
     VkDescriptorImageInfo default_image_info;
 };
@@ -1100,6 +1102,7 @@ struct wined3d_view_vk
         VkDescriptorImageInfo vk_image_info;
     } u;
     uint64_t command_buffer_id;
+    uint64_t image_generation;
 };
 
 struct wined3d_shader_resource_view_vk
@@ -1129,6 +1132,8 @@ void wined3d_shader_resource_view_vk_update_buffer(struct wined3d_shader_resourc
         struct wined3d_context_vk *context_vk);
 void wined3d_shader_resource_view_vk_update_layout(struct wined3d_shader_resource_view_vk *srv_vk,
         VkImageLayout layout);
+const VkDescriptorImageInfo *wined3d_shader_resource_view_vk_get_image_info(
+        struct wined3d_shader_resource_view_vk *srv_vk, struct wined3d_context_vk *context_vk);
 
 struct wined3d_unordered_access_view_vk
 {

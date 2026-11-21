@@ -209,6 +209,8 @@ struct topo_node
         {
             IMFMediaSource *source;
             DWORD stream_id;
+            /* Requests made before the source sent the streams. */
+            unsigned int requests;
         } source;
         struct
         {
@@ -1130,6 +1132,61 @@ static void session_flush_nodes(struct media_session *session)
 
 static void session_handle_source_shutdown(struct media_session *session);
 
+static void session_select_topo_streams(struct media_session *session)
+{
+    struct media_source *source;
+    struct topo_node *node;
+    DWORD count;
+    UINT i;
+
+    /* deselect all source streams */
+    LIST_FOR_EACH_ENTRY(source, &session->presentation.sources, struct media_source, entry)
+    {
+        if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorCount(source->pd, &count))) continue;
+
+        for (i = 0; i < count; ++i)
+        {
+            IMFPresentationDescriptor_DeselectStream(source->pd, i);
+        }
+    }
+
+    /* only select source streams that exist in the topology */
+    LIST_FOR_EACH_ENTRY(node, &session->presentation.nodes, struct topo_node, entry)
+    {
+        IMFStreamDescriptor *sd;
+        DWORD id;
+        BOOL selected;
+
+        if (node->type != MF_TOPOLOGY_SOURCESTREAM_NODE)
+            continue;
+
+        LIST_FOR_EACH_ENTRY(source, &session->presentation.sources, struct media_source, entry)
+        {
+            if (source->source != node->u.source.source)
+                continue;
+
+            count = 0;
+            IMFPresentationDescriptor_GetStreamDescriptorCount(source->pd, &count);
+            for (i = 0; i < count; ++i)
+            {
+                if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(source->pd, i, &selected, &sd)))
+                    continue;
+
+                if (SUCCEEDED(IMFStreamDescriptor_GetStreamIdentifier(sd, &id)) && id == node->u.source.stream_id)
+                {
+                    if (FAILED(IMFPresentationDescriptor_SelectStream(source->pd, i)))
+                        WARN("failed to select stream index %u.\n", i);
+
+                    IMFStreamDescriptor_Release(sd);
+                    break;
+                }
+
+                IMFStreamDescriptor_Release(sd);
+            }
+        }
+    }
+}
+
 static void session_start(struct media_session *session, const GUID *time_format, const PROPVARIANT *start_position)
 {
     struct media_source *source;
@@ -1201,6 +1258,8 @@ static void session_start(struct media_session *session, const GUID *time_format
             session->presentation.time_format = *time_format;
             session->presentation.start_position.vt = VT_EMPTY;
             PropVariantCopy(&session->presentation.start_position, start_position);
+
+            session_select_topo_streams(session);
 
             if (FAILED(hr = session_subscribe_sources(session)))
             {
@@ -3091,6 +3150,12 @@ static HRESULT session_add_media_stream(struct media_session *session, IMFMediaS
 
             node->object.source_stream = stream;
             IMFMediaStream_AddRef(node->object.source_stream);
+            while (node->u.source.requests)
+            {
+                if (FAILED(hr = IMFMediaStream_RequestSample(stream, NULL)))
+                    WARN("Sample request failed, hr %#lx.\n", hr);
+                node->u.source.requests--;
+            }
             break;
         }
     }
@@ -4146,7 +4211,9 @@ static HRESULT session_request_sample_from_node(struct media_session *session, s
     switch (topo_node->type)
     {
         case MF_TOPOLOGY_SOURCESTREAM_NODE:
-            if (FAILED(hr = IMFMediaStream_RequestSample(topo_node->object.source_stream, NULL)))
+            if (!topo_node->object.source_stream)
+                topo_node->u.source.requests++;
+            else if (FAILED(hr = IMFMediaStream_RequestSample(topo_node->object.source_stream, NULL)))
                 WARN("Sample request failed, hr %#lx.\n", hr);
             break;
         case MF_TOPOLOGY_TRANSFORM_NODE:

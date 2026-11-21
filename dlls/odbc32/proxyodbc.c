@@ -1068,6 +1068,7 @@ static SQLRETURN col_attribute_win32_a( struct statement *stmt, SQLUSMALLINT col
         case SQL_COLUMN_NAME:
         case SQL_COLUMN_TYPE:
         case SQL_COLUMN_DISPLAY_SIZE:
+        case SQL_COLUMN_UNSIGNED:
         case SQL_MAX_COLUMNS_IN_TABLE:
             break;
 
@@ -1873,6 +1874,9 @@ static SQLRETURN describe_col_win32_a( struct statement *stmt, SQLUSMALLINT col_
                                        SQLULEN *col_size, SQLSMALLINT *decimal_digits, SQLSMALLINT *nullable )
 {
     SQLRETURN ret = SQL_ERROR;
+    SQLSMALLINT tmp;
+
+    if (!retlen) retlen = &tmp;
 
     if (stmt->hdr.win32_funcs->SQLDescribeCol)
     {
@@ -1881,17 +1885,14 @@ static SQLRETURN describe_col_win32_a( struct statement *stmt, SQLUSMALLINT col_
     }
     else if (stmt->hdr.win32_funcs->SQLDescribeColW)
     {
-        SQLWCHAR *nameW;
+        SQLWCHAR *nameW = NULL;
         SQLSMALLINT lenW;
 
-        if (!(nameW = malloc( buflen * sizeof(WCHAR) ))) return SQL_ERROR;
+        if (col_name && !(nameW = malloc( buflen * sizeof(WCHAR) ))) return SQL_ERROR;
         ret = stmt->hdr.win32_funcs->SQLDescribeColW( stmt->hdr.win32_handle, col_number, nameW, buflen, &lenW,
                                                       data_type, col_size, decimal_digits, nullable );
-        if (SUCCESS( ret ))
-        {
-            int len = WideCharToMultiByte( CP_ACP, 0, nameW, -1, (char *)col_name, buflen, NULL, NULL );
-            if (retlen) *retlen = len - 1;
-        }
+        if (nameW && SUCCESS( ret ))
+            *retlen = WideCharToMultiByte( CP_ACP, 0, nameW, -1, (char *)col_name, buflen, NULL, NULL ) - 1;
         free( nameW );
     }
 
@@ -4836,6 +4837,7 @@ static SQLRETURN parse_connect_string( struct attribute_list *list, const WCHAR 
     list->attrs = NULL;
     for (;;)
     {
+        while (*p == ';') p++;
         if (!*p) break;
         if (!(q = wcschr( p, '=' )) || q == p) return SQL_SUCCESS;
         len = q - p;
@@ -4912,11 +4914,12 @@ static WCHAR *build_connect_string( struct attribute_list *list )
     for (i = 0; i < list->count; i++)
     {
         wcscpy( ptr, list->attrs[i]->name );
+        wcsupr( ptr );
         ptr += wcslen( ptr );
         *ptr++ = '=';
         wcscpy( ptr, list->attrs[i]->value );
         ptr += wcslen( ptr );
-        if (i < list->count - 1) *ptr++ = ';';
+        *ptr++ = ';';
     }
     *ptr = 0;
     return ret;
@@ -5002,9 +5005,11 @@ SQLRETURN WINAPI SQLBrowseConnect(SQLHDBC ConnectionHandle, SQLCHAR *InConnectio
 
     if (!SUCCESS((ret = prepare_connection( filename, con )))) goto done;
     if (con->hdr.win32_handle)
-        ret = browse_connect_win32_a( con, strA, StringLength1, OutConnectionString, BufferLength, StringLength2 );
+        ret = browse_connect_win32_a( con, strA, strlen((const char *)strA), OutConnectionString, BufferLength,
+                                      StringLength2 );
     else
-        ret = browse_connect_unix_a( con, strA, StringLength1, OutConnectionString, BufferLength, StringLength2 );
+        ret = browse_connect_unix_a( con, strA, strlen((const char *)strA), OutConnectionString, BufferLength,
+                                     StringLength2 );
 
 done:
     free( strA );
@@ -6141,13 +6146,13 @@ SQLRETURN WINAPI SQLDriverConnect(SQLHDBC ConnectionHandle, SQLHWND WindowHandle
     if (!SUCCESS((ret = prepare_connection( filename, con )))) goto done;
     if (con->hdr.win32_handle)
     {
-        ret = driver_connect_win32_a( con, WindowHandle, strA, Length, OutConnectionString, BufferLength, Length2,
-                                      DriverCompletion );
+        ret = driver_connect_win32_a( con, WindowHandle, strA, strlen((const char *)strA), OutConnectionString,
+                                      BufferLength, Length2, DriverCompletion );
     }
     else
     {
-        ret = driver_connect_unix_a( con, WindowHandle, strA, Length, OutConnectionString, BufferLength, Length2,
-                                     DriverCompletion );
+        ret = driver_connect_unix_a( con, WindowHandle, strA, strlen((const char *)strA), OutConnectionString,
+                                     BufferLength, Length2, DriverCompletion );
     }
 
 done:
@@ -6379,14 +6384,27 @@ static SQLRETURN describe_col_win32_w( struct statement *stmt, SQLUSMALLINT col_
                                        SQLULEN *col_size, SQLSMALLINT *decimal_digits, SQLSMALLINT *nullable )
 {
     SQLRETURN ret = SQL_ERROR;
+    SQLSMALLINT tmp;
+
+    if (!name_len) name_len = &tmp;
 
     if (stmt->hdr.win32_funcs->SQLDescribeColW)
     {
         ret = stmt->hdr.win32_funcs->SQLDescribeColW( stmt->hdr.win32_handle, col_number, col_name, buf_len,
                                                        name_len, data_type, col_size, decimal_digits, nullable );
     }
-    else if (stmt->hdr.win32_funcs->SQLDescribeCol) FIXME( "Unicode to ANSI conversion not handled\n" );
+    else if (stmt->hdr.win32_funcs->SQLDescribeCol)
+    {
+        SQLCHAR *nameA = NULL;
+        SQLSMALLINT lenA;
 
+        if (col_name && !(nameA = malloc( buf_len ))) return SQL_ERROR;
+        ret = stmt->hdr.win32_funcs->SQLDescribeCol( stmt->hdr.win32_handle, col_number, nameA, buf_len,
+                &lenA, data_type, col_size, decimal_digits, nullable );
+        if (nameA && SUCCESS(ret))
+            *name_len = MultiByteToWideChar( CP_ACP, 0, (const char *)nameA, -1, col_name, buf_len ) - 1;
+        free( nameA );
+    }
 
     if (SUCCESS( ret ) && data_type)
         *data_type = map_type( stmt, FALSE, *data_type );
@@ -6785,6 +6803,7 @@ static SQLRETURN col_attribute_win32_w( struct statement *stmt, SQLUSMALLINT col
         case SQL_COLUMN_NAME:
         case SQL_COLUMN_TYPE:
         case SQL_COLUMN_DISPLAY_SIZE:
+        case SQL_COLUMN_UNSIGNED:
         case SQL_MAX_COLUMNS_IN_TABLE:
             break;
 
@@ -7478,12 +7497,12 @@ SQLRETURN WINAPI SQLDriverConnectW(SQLHDBC ConnectionHandle, SQLHWND WindowHandl
     if (!SUCCESS((ret = prepare_connection( filename, con )))) goto done;
     if (con->hdr.win32_handle)
     {
-        ret = driver_connect_win32_w( con, WindowHandle, InConnectionString, Length, OutConnectionString,
+        ret = driver_connect_win32_w( con, WindowHandle, connect_string, wcslen(connect_string), OutConnectionString,
                                       BufferLength, Length2, DriverCompletion );
     }
     else
     {
-        ret = driver_connect_unix_w( con, WindowHandle, InConnectionString, Length, OutConnectionString,
+        ret = driver_connect_unix_w( con, WindowHandle, connect_string, wcslen(connect_string), OutConnectionString,
                                      BufferLength, Length2, DriverCompletion );
     }
 
@@ -7921,12 +7940,12 @@ SQLRETURN WINAPI SQLBrowseConnectW(SQLHDBC ConnectionHandle, SQLWCHAR *InConnect
     if (!SUCCESS((ret = prepare_connection( filename, con )))) goto done;
     if (con->hdr.win32_handle)
     {
-        ret = browse_connect_win32_w( con, connect_string, StringLength1, OutConnectionString, BufferLength,
+        ret = browse_connect_win32_w( con, connect_string, wcslen(connect_string), OutConnectionString, BufferLength,
                                       StringLength2 );
     }
     else
     {
-        ret = browse_connect_unix_w( con, connect_string, StringLength1, OutConnectionString, BufferLength,
+        ret = browse_connect_unix_w( con, connect_string, wcslen(connect_string), OutConnectionString, BufferLength,
                                      StringLength2 );
     }
 

@@ -22,6 +22,7 @@
 #import "macdrv.h"
 
 #define GL_SILENCE_DEPRECATION
+#import <IOSurface/IOSurfaceObjC.h>
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 #include <dlfcn.h>
@@ -173,6 +174,24 @@ static inline NSUInteger adjusted_modifiers_for_settings(NSUInteger modifiers)
     return new_modifiers;
 }
 
+static void update_key_repeat(void)
+{
+    static NSTimeInterval last_delay = -1, last_interval = -1;
+    NSTimeInterval delay = [NSEvent keyRepeatDelay];
+    NSTimeInterval interval = [NSEvent keyRepeatInterval];
+    int spi_delay, spi_speed;
+
+    if (delay == last_delay && interval == last_interval) return;
+    last_delay = delay;
+    last_interval = interval;
+    spi_delay = MIN(3, MAX(0, delay * 4 - 0.5));
+    spi_speed = MIN(31, MAX(0, 0.4 / interval - 0.5));
+
+    NtUserSystemParametersInfo(SPI_SETKEYBOARDDELAY, spi_delay, NULL, 0);
+    NtUserSystemParametersInfo(SPI_SETKEYBOARDSPEED, spi_speed, NULL, 0);
+    NtUserCallOneParam(delay > 0, NtUserCallOneParam_SetKeyboardAutoRepeat);
+}
+
 static inline BOOL stage_manager_enabled(void)
 {
     /* There is no documented way to determine if Stage Manager is enabled,
@@ -224,11 +243,11 @@ static inline BOOL stage_manager_enabled(void)
 @end
 
 
-@interface WineContentView : WineBaseView <NSTextInputClient, NSViewLayerContentScaleDelegate>
+@interface WineContentView : WineBaseView <NSTextInput, NSViewLayerContentScaleDelegate>
 {
     CGRect surfaceRect;
-    CGImageRef colorImage;
-    CGImageRef shapeImage;
+    IOSurface* _ioSurface;
+    BOOL _hasShape;
 
     NSMutableArray* glContexts;
     NSMutableArray* pendingGlContexts;
@@ -368,8 +387,7 @@ static inline BOOL stage_manager_enabled(void)
         [glContexts release];
         [pendingGlContexts release];
         [_caLayerHosts release];
-        CGImageRelease(colorImage);
-        CGImageRelease(shapeImage);
+        [_ioSurface release];
         [super dealloc];
     }
 
@@ -386,8 +404,6 @@ static inline BOOL stage_manager_enabled(void)
     - (void) updateLayer
     {
         WineWindow* window = (WineWindow*)[self window];
-        CGImageRef image, maskedImage;
-        CGRect imageRect;
         CALayer* layer = [self layer];
 
         if ([window contentView] != self)
@@ -396,32 +412,17 @@ static inline BOOL stage_manager_enabled(void)
         if (window.closing)
             return;
 
-        imageRect = layer.bounds;
-        imageRect.origin.x *= layer.contentsScale;
-        imageRect.origin.y *= layer.contentsScale;
-        imageRect.size.width *= layer.contentsScale;
-        imageRect.size.height *= layer.contentsScale;
+        layer.position = surfaceRect.origin;
+        layer.contents = _ioSurface;
+        [window windowDidDrawContent];
 
-        maskedImage = shapeImage ? CGImageCreateWithMask(colorImage, shapeImage)
-                                 : CGImageRetain(colorImage);
-        image = CGImageCreateWithImageInRect(maskedImage, imageRect);
-        CGImageRelease(maskedImage);
-
-        if (image)
+        // If the window may be transparent, then we have to invalidate the
+        // shadow every time we draw.  Also, if this is the first time we've
+        // drawn since changing from transparent to opaque.
+        if (_hasShape || window.usePerPixelAlpha || window.shapeChangedSinceLastDraw)
         {
-            layer.position = surfaceRect.origin;
-            layer.contents = (id)image;
-            CFRelease(image);
-            [window windowDidDrawContent];
-
-            // If the window may be transparent, then we have to invalidate the
-            // shadow every time we draw.  Also, if this is the first time we've
-            // drawn since changing from transparent to opaque.
-            if (shapeImage || window.usePerPixelAlpha || window.shapeChangedSinceLastDraw)
-            {
-                window.shapeChangedSinceLastDraw = FALSE;
-                [window invalidateShadow];
-            }
+            window.shapeChangedSinceLastDraw = NO;
+            [window invalidateShadow];
         }
     }
 
@@ -430,21 +431,21 @@ static inline BOOL stage_manager_enabled(void)
         surfaceRect = rect;
     }
 
-    - (void) setColorImage:(CGImageRef)image
+    - (void) setIOSurface:(IOSurface*)surface
     {
-        CGImageRelease(colorImage);
-        colorImage = CGImageRetain(image);
+        [surface retain];
+        [_ioSurface release];
+        _ioSurface = surface;
     }
 
-    - (void) setShapeImage:(CGImageRef)image
+    - (void) setHasShape:(BOOL)has_shape
     {
-        CGImageRelease(shapeImage);
-        shapeImage = CGImageRetain(image);
+        _hasShape = has_shape;
     }
 
-    - (BOOL) hasShapeImage
+    - (BOOL) hasShape
     {
-        return !!shapeImage;
+        return _hasShape;
     }
 
     - (void) viewWillDraw
@@ -704,7 +705,7 @@ static inline BOOL stage_manager_enabled(void)
     }
 
     /*
-     * ---------- NSTextInputClient methods ----------
+     * ---------- NSTextInput methods ----------
      */
     - (NSTextInputContext*) inputContext
     {
@@ -713,7 +714,7 @@ static inline BOOL stage_manager_enabled(void)
         return [super inputContext];
     }
 
-    - (void) insertText:(id)string replacementRange:(NSRange)replacementRange
+    - (void) insertText:(id)string
     {
         if ([string isKindOfClass:[NSAttributedString class]])
             string = [string string];
@@ -727,7 +728,7 @@ static inline BOOL stage_manager_enabled(void)
         [(WineWindow*)[self window] setCommandDone:TRUE];
     }
 
-    - (void) setMarkedText:(id)string selectedRange:(NSRange)selectedRange replacementRange:(NSRange)replacementRange
+    - (void) setMarkedText:(id)string selectedRange:(NSRange)selectedRange
     {
         if ([string isKindOfClass:[NSAttributedString class]])
             string = [string string];
@@ -736,12 +737,8 @@ static inline BOOL stage_manager_enabled(void)
         {
             WineWindow* window = (WineWindow*)[self window];
 
-            if (replacementRange.location == NSNotFound)
-                replacementRange = NSMakeRange(0, [markedText length]);
-
-            [markedText replaceCharactersInRange:replacementRange withString:string];
+            [markedText replaceCharactersInRange:NSMakeRange(0, [markedText length]) withString:string];
             markedTextSelection = selectedRange;
-            markedTextSelection.location += replacementRange.location;
 
             macdrv_ime_set_text(window.hwnd, (CFStringRef)[markedText string], false,
                                 markedTextSelection.location,
@@ -775,14 +772,17 @@ static inline BOOL stage_manager_enabled(void)
         return [markedText length] > 0;
     }
 
-    - (NSAttributedString*) attributedSubstringForProposedRange:(NSRange)aRange actualRange:(NSRangePointer)actualRange
+    - (NSInteger) conversationIdentifier
+    {
+        return (NSInteger)self;
+    }
+
+    - (NSAttributedString*) attributedSubstringFromRange:(NSRange)aRange
     {
         if (aRange.location >= [markedText length])
             return nil;
 
         aRange = NSIntersectionRange(aRange, NSMakeRange(0, [markedText length]));
-        if (actualRange)
-            *actualRange = aRange;
         return [markedText attributedSubstringFromRange:aRange];
     }
 
@@ -791,20 +791,15 @@ static inline BOOL stage_manager_enabled(void)
         return [NSArray array];
     }
 
-    - (NSRect) firstRectForCharacterRange:(NSRange)aRange actualRange:(NSRangePointer)actualRange
+    - (NSRect) firstRectForCharacterRange:(NSRange)aRange
     {
         NSRect ret;
-
-        aRange = NSIntersectionRange(aRange, NSMakeRange(0, [markedText length]));
 
         pthread_mutex_lock(&ime_composition_rect_mutex);
         ret = NSRectFromCGRect(cgrect_mac_from_win(ime_composition_rect));
         pthread_mutex_unlock(&ime_composition_rect_mutex);
 
         [[WineApplicationController sharedController] flipRect:&ret];
-
-        if (actualRange)
-            *actualRange = aRange;
         return ret;
     }
 
@@ -1221,9 +1216,7 @@ static inline BOOL stage_manager_enabled(void)
                     {
                         [self setStyleMask:([self styleMask] | NSWindowStyleMaskMiniaturizable)];
                         [super miniaturize:nil];
-                        discard |= event_mask_for_type(WINDOW_BROUGHT_FORWARD) |
-                                   event_mask_for_type(WINDOW_GOT_FOCUS) |
-                                   event_mask_for_type(WINDOW_LOST_FOCUS);
+                        discard |= event_mask_for_type(WINDOW_BROUGHT_FORWARD);
                     }
                 }
                 else
@@ -1233,7 +1226,6 @@ static inline BOOL stage_manager_enabled(void)
             {
                 ignore_windowDeminiaturize = TRUE;
                 [self deminiaturize:nil];
-                discard |= event_mask_for_type(WINDOW_LOST_FOCUS);
             }
 
             if (discard)
@@ -1717,10 +1709,6 @@ static inline BOOL stage_manager_enabled(void)
         {
             pendingOrderOut = TRUE;
             [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_BROUGHT_FORWARD) |
-                                             event_mask_for_type(WINDOW_GOT_FOCUS) |
-                                             event_mask_for_type(WINDOW_LOST_FOCUS) |
-                                             event_mask_for_type(WINDOW_MAXIMIZE_REQUESTED) |
-                                             event_mask_for_type(WINDOW_MINIMIZE_REQUESTED) |
                                              event_mask_for_type(WINDOW_RESTORE_REQUESTED)
                                    forWindow:self];
             return;
@@ -1736,6 +1724,7 @@ static inline BOOL stage_manager_enabled(void)
             [parent grabDockIconSnapshotFromWindow:self force:NO];
 
         [self becameIneligibleParentOrChild];
+        causing_becomeKeyWindow = self;
         if ([self isMiniaturized] || [self styleMask] & NSWindowStyleMaskFullScreen)
         {
             fakingClose = TRUE;
@@ -1744,6 +1733,7 @@ static inline BOOL stage_manager_enabled(void)
         }
         else
             [self orderOut:nil];
+        causing_becomeKeyWindow = nil;
         [self setBackgroundColor:[NSColor clearColor]];
         [self setOpaque:NO];
         drawnSinceShown = NO;
@@ -1754,10 +1744,6 @@ static inline BOOL stage_manager_enabled(void)
         [NSApp removeWindowsItem:self];
 
         [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_BROUGHT_FORWARD) |
-                                         event_mask_for_type(WINDOW_GOT_FOCUS) |
-                                         event_mask_for_type(WINDOW_LOST_FOCUS) |
-                                         event_mask_for_type(WINDOW_MAXIMIZE_REQUESTED) |
-                                         event_mask_for_type(WINDOW_MINIMIZE_REQUESTED) |
                                          event_mask_for_type(WINDOW_RESTORE_REQUESTED)
                                forWindow:self];
     }
@@ -1914,7 +1900,7 @@ static inline BOOL stage_manager_enabled(void)
     - (BOOL) needsTransparency
     {
         WineContentView *view = self.contentView;
-        return self.contentView.layer.mask || [view hasShapeImage] || self.usePerPixelAlpha ||
+        return self.contentView.layer.mask || [view hasShape] || self.usePerPixelAlpha ||
                 (gl_surface_mode == GL_SURFACE_BEHIND && [view hasGLDescendant]);
     }
 
@@ -1971,10 +1957,6 @@ static inline BOOL stage_manager_enabled(void)
         causing_becomeKeyWindow = self;
         [self makeKeyWindow];
         causing_becomeKeyWindow = nil;
-
-        [queue discardEventsMatchingMask:event_mask_for_type(WINDOW_GOT_FOCUS) |
-                                         event_mask_for_type(WINDOW_LOST_FOCUS)
-                               forWindow:self];
     }
 
     - (void) postKey:(uint16_t)keyCode
@@ -1985,6 +1967,8 @@ static inline BOOL stage_manager_enabled(void)
         macdrv_event* event;
         CGEventRef cgevent;
         WineApplicationController* controller = [WineApplicationController sharedController];
+
+        if (pressed) update_key_repeat();
 
         event = macdrv_create_event(pressed ? KEY_PRESS : KEY_RELEASE, self);
         event->key.keycode   = keyCode;
@@ -2426,9 +2410,7 @@ static inline BOOL stage_manager_enabled(void)
             return;
         }
 
-        macdrv_event* event = macdrv_create_event(WINDOW_MINIMIZE_REQUESTED, self);
-        [queue postEvent:event];
-        macdrv_release_event(event);
+        macdrv_window_minimize_requested(self.hwnd);
 
         WineWindow* parent = (WineWindow*)self.parentWindow;
         if ([parent isKindOfClass:[WineWindow class]])
@@ -2562,15 +2544,8 @@ static inline BOOL stage_manager_enabled(void)
      */
     - (void) keyDown:(NSEvent *)theEvent
     {
-        if ([theEvent isARepeat])
-        {
-            if (!allowKeyRepeats)
-                return;
-        }
-        else
-            allowKeyRepeats = YES;
-
-        [self postKeyEvent:theEvent];
+        if (![theEvent isARepeat])
+            [self postKeyEvent:theEvent];
     }
 
     - (void) flagsChanged:(NSEvent *)theEvent
@@ -2607,9 +2582,6 @@ static inline BOOL stage_manager_enabled(void)
             if (changed & modifiers[i].mask)
             {
                 BOOL pressed = (modifierFlags & modifiers[i].mask) != 0;
-
-                if (pressed)
-                    allowKeyRepeats = NO;
 
                 if (i == last_changed)
                     lastModifierFlags = modifierFlags;
@@ -2679,7 +2651,7 @@ static inline BOOL stage_manager_enabled(void)
         if (event)
             [self flagsChanged:event];
 
-        if (causing_becomeKeyWindow == self) return;
+        if (causing_becomeKeyWindow) return;
 
         [controller windowGotFocus:self];
     }
@@ -2757,14 +2729,14 @@ static inline BOOL stage_manager_enabled(void)
 
     - (void)windowDidMiniaturize:(NSNotification *)notification
     {
-        macdrv_event* event;
+        WineApplicationController* controller = [WineApplicationController sharedController];
 
         if (fullscreen && [self isOnActiveSpace])
-            [[WineApplicationController sharedController] updateFullscreenWindows];
+            [controller updateFullscreenWindows];
 
-        event = macdrv_create_event(WINDOW_DID_MINIMIZE, self);
-        [queue postEvent:event];
-        macdrv_release_event(event);
+        /* If all our windows are minimized, disable cursor clipping. */
+        if (![controller isAnyWineWindowVisible])
+            NtUserClipCursor(NULL);
     }
 
     - (void)windowDidMove:(NSNotification *)notification
@@ -2774,13 +2746,9 @@ static inline BOOL stage_manager_enabled(void)
 
     - (void)windowDidResignKey:(NSNotification *)notification
     {
-        macdrv_event* event;
-
         if (causing_becomeKeyWindow) return;
 
-        event = macdrv_create_event(WINDOW_LOST_FOCUS, self);
-        [queue postEvent:event];
-        macdrv_release_event(event);
+        macdrv_window_lost_focus(hwnd);
     }
 
     - (void)windowDidResize:(NSNotification *)notification skipSizeMove:(BOOL)skipSizeMove
@@ -2837,9 +2805,7 @@ static inline BOOL stage_manager_enabled(void)
         }
         else if (!resizable)
         {
-            macdrv_event* event = macdrv_create_event(WINDOW_MAXIMIZE_REQUESTED, self);
-            [queue postEvent:event];
-            macdrv_release_event(event);
+            macdrv_window_maximize_requested(self.hwnd);
             return NO;
         }
 
@@ -3266,47 +3232,45 @@ void macdrv_set_cocoa_parent_window(WineWindow *window, WineWindow *parent)
 
 
 /***********************************************************************
- *              macdrv_window_set_color_image
+ *              macdrv_window_set_io_surface
  *
  * Push a window surface color pixel update in a specified rect (in non-client
  * area coordinates).
  */
-void macdrv_window_set_color_image(WineWindow *window, CGImageRef image, CGRect rect, CGRect dirty)
+void macdrv_window_set_io_surface(WineWindow *window, IOSurfaceRef s, CGRect rect, CGRect dirty)
 {
 @autoreleasepool
 {
-    CGImageRetain(image);
+    IOSurface* surface = (IOSurface*)s;
+
+    [surface retain];
 
     OnMainThreadAsync(^{
         WineContentView *view = [window contentView];
 
-        [view setColorImage:image];
+        [view setIOSurface:surface];
         [view setSurfaceRect:cgrect_mac_from_win(rect)];
         [view setNeedsDisplayInRect:NSRectFromCGRect(cgrect_mac_from_win(dirty))];
 
-        CGImageRelease(image);
+        [surface release];
     });
 }
 }
 
 
 /***********************************************************************
- *              macdrv_window_set_shape_image
+ *              macdrv_window_shape_changed
  */
-void macdrv_window_set_shape_image(WineWindow *window, CGImageRef image)
+void macdrv_window_shape_changed(WineWindow *window, bool has_shape)
 {
 @autoreleasepool
 {
-    CGImageRetain(image);
-
     OnMainThreadAsync(^{
         WineContentView *view = [window contentView];
 
-        [view setShapeImage:image];
-        [view setNeedsDisplay:true];
+        [view setHasShape:has_shape];
+        [view setNeedsDisplay:YES];
         [window checkTransparency];
-
-        CGImageRelease(image);
     });
 }
 }
@@ -3859,7 +3823,7 @@ void macdrv_set_view_backing_size(WineContentView *view, const int backing_size[
  *              macdrv_window_background_color
  *
  * Returns the standard Mac window background color as a 32-bit value of
- * the form 0x00rrggbb.
+ * the form 0xaarrggbb.
  */
 uint32_t macdrv_window_background_color(void)
 {
@@ -3871,14 +3835,14 @@ uint32_t macdrv_window_background_color(void)
     // of it is to draw with it.
     dispatch_once(&once, ^{
         OnMainThread(^{
-            unsigned char rgbx[4];
-            unsigned char *planes = rgbx;
+            unsigned char rgba[4];
+            unsigned char *planes = rgba;
             NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:&planes
                                                                                pixelsWide:1
                                                                                pixelsHigh:1
                                                                             bitsPerSample:8
-                                                                          samplesPerPixel:3
-                                                                                 hasAlpha:NO
+                                                                          samplesPerPixel:4
+                                                                                 hasAlpha:YES
                                                                                  isPlanar:NO
                                                                            colorSpaceName:NSCalibratedRGBColorSpace
                                                                              bitmapFormat:0
@@ -3890,7 +3854,7 @@ uint32_t macdrv_window_background_color(void)
             NSRectFill(NSMakeRect(0, 0, 1, 1));
             [NSGraphicsContext restoreGraphicsState];
             [bitmap release];
-            result = rgbx[0] << 16 | rgbx[1] << 8 | rgbx[2];
+            result = rgba[0] << 16 | rgba[1] << 8 | rgba[2] | rgba[3] << 24;
         });
     });
 

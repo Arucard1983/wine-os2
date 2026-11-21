@@ -168,7 +168,7 @@ struct context_data
                  unsigned char regs[80]; } i386_regs;
         struct { struct { unsigned __int64 low, high; } fpregs[32]; } x86_64_regs;
         struct { unsigned __int64 d[32]; unsigned int fpscr; } arm_regs;
-        struct { struct { unsigned __int64 low, high; } q[32]; unsigned int fpcr, fpsr; } arm64_regs;
+        struct { struct { unsigned __int64 low, high; } q[16]; unsigned int fpcr, fpsr; } arm64_regs;
     } fp;  /* selected by SERVER_CTX_FLOATING_POINT */
     union
     {
@@ -187,8 +187,9 @@ struct context_data
     } exec_space;                /* selected by SERVER_CTX_EXEC_SPACE */
     union
     {
-        struct { struct { unsigned __int64 low, high; } ymm_high[16]; } regs;
-    } ymm;                       /* selected by SERVER_CTX_YMM_REGISTERS */
+        struct { struct { unsigned __int64 low, high; } ymm_high[16]; } ymm_regs;
+        struct { struct { unsigned __int64 low, high; } q16[16]; } arm64_regs;
+    } vector;                    /* selected by SERVER_CTX_VECTOR_REGISTERS */
     union
     {
         unsigned __int64 arm64_x18;
@@ -201,7 +202,7 @@ struct context_data
 #define SERVER_CTX_FLOATING_POINT     0x0008
 #define SERVER_CTX_DEBUG_REGISTERS    0x0010
 #define SERVER_CTX_EXTENDED_REGISTERS 0x0020
-#define SERVER_CTX_YMM_REGISTERS      0x0040
+#define SERVER_CTX_VECTOR_REGISTERS   0x0040
 #define SERVER_CTX_EXEC_SPACE         0x0080
 #define SERVER_CTX_TLS                0x0100
 
@@ -773,6 +774,7 @@ enum irp_type
     IRP_CALL_CLOSE,
     IRP_CALL_READ,
     IRP_CALL_WRITE,
+    IRP_CALL_SET_INFO,
     IRP_CALL_FLUSH,
     IRP_CALL_IOCTL,
     IRP_CALL_VOLUME,
@@ -814,6 +816,12 @@ union irp_params
         client_ptr_t     file;      /* opaque ptr for the file object */
         file_pos_t       pos;       /* file position */
     } write;
+    struct
+    {
+        enum irp_type    type;      /* IRP_CALL_SET_INFO */
+        int              class;     /* information class */
+        client_ptr_t     file;      /* opaque ptr for the file object */
+    } set_info;
     struct
     {
         enum irp_type    type;      /* IRP_CALL_FLUSH */
@@ -919,8 +927,8 @@ struct monitor_info
     struct rectangle raw;     /* host / physical position of the monitor rect */
     struct rectangle virt;    /* client / virtual position of the monitor rect */
     unsigned int     flags;   /* MONITOR_FLAG_* flags for the monitor */
-    struct ratio     dpi;     /* effective DPI for the monitor */
-    struct ratio     raw_dpi; /* raw DPI for the monitor */
+    unsigned int     dpi;     /* effective DPI for the monitor */
+    struct ratio     scale;   /* virtual to physical scale ratio (raw DPI) */
 };
 #define MONITOR_FLAG_PRIMARY  0x01
 #define MONITOR_FLAG_CLONE    0x02
@@ -991,6 +999,7 @@ enum d3dkmt_type
     D3DKMT_SYNC         = 5,
     D3DKMT_RESOURCE     = 6,
     D3DKMT_ALLOCATION   = 7,
+    D3DKMT_SWAPCHAIN    = 8,
 };
 
 /****************************************************************/
@@ -1076,12 +1085,19 @@ typedef volatile struct
     char                 extra[];            /* extra bytes storage */
 } class_shm_t;
 
+struct window_style
+{
+    unsigned int         ws;               /* window base styles (WS_*) */
+    unsigned int         ex;               /* window extended styles (WS_EX_*) */
+};
+
 struct window_info
 {
     lparam_t             id;               /* window id */
     mod_handle_t         instance;         /* creator instance */
     lparam_t             user_data;        /* user-specific data */
     client_ptr_t         wndproc;          /* window proc */
+    struct window_style  style;            /* combined window styles */
 };
 
 typedef volatile struct
@@ -1091,8 +1107,8 @@ typedef volatile struct
     unsigned int         fnid;             /* builtin class FNID, or 0 */
     unsigned int         ansi;             /* window wndproc is ansi */
     int                  __pad;
-    struct ratio         dpi;              /* effective DPI of the window monitor */
-    struct ratio         raw_dpi;          /* raw DPI of the window monitor */
+    unsigned int         dpi;              /* effective DPI of the window monitor */
+    struct ratio         scale;            /* scale ratio of the window monitor */
     data_size_t          private_size;     /* length of private extra bytes range */
     data_size_t          extra_size;       /* size of the extra info */
     struct window_info   info;             /* window info (GWLP_*) */
@@ -1227,6 +1243,7 @@ typedef volatile struct
     int          exit_code;    /* process exit code */
 @REPLY
     int          self;         /* suicide? */
+    int          exit_code;    /* process exit code */
 @END
 
 
@@ -1721,6 +1738,16 @@ enum server_fd_type
     unsigned int info_class;    /* queried information class */
 @REPLY
     VARARG(data,bytes);         /* file info data */
+@END
+
+/* Set file information */
+@REQ(set_file_info)
+    obj_handle_t handle;        /* handle to the file */
+    struct async_data async;    /* async I/O parameters */
+    unsigned int info_class;    /* queried information class */
+    VARARG(data,bytes);         /* file info data */
+@REPLY
+    obj_handle_t wait;          /* handle to wait on for blocking read */
 @END
 
 /* Query volume information */
@@ -2651,12 +2678,6 @@ enum message_type
 #define NAMED_PIPE_NONBLOCKING_MODE     0x0004
 #define NAMED_PIPE_SERVER_END           0x8000
 
-/* Set named pipe information by handle */
-@REQ(set_named_pipe_info)
-    obj_handle_t   handle;
-    unsigned int   flags;
-@END
-
 /* Create a window */
 @REQ(create_window)
     user_handle_t  parent;      /* parent window */
@@ -2668,8 +2689,8 @@ enum message_type
     unsigned int   style;       /* window style */
     unsigned int   ex_style;    /* window extended style */
     unsigned int   ansi;        /* window created as ansi */
-    struct ratio   dpi;         /* initial monitor DPI */
-    struct ratio   raw_dpi;     /* initial monitor raw DPI */
+    unsigned int   dpi;         /* initial monitor DPI */
+    struct ratio   scale;       /* initial monitor scale ratio */
     VARARG(class,unicode_str);  /* class name */
 @REPLY
     user_handle_t  handle;      /* created window */
@@ -2793,7 +2814,7 @@ enum message_type
     user_handle_t  parent;        /* parent window */
     int            x;             /* point in parent coordinates */
     int            y;
-    struct ratio   dpi;           /* dpi for the point coordinates */
+    unsigned int   dpi;           /* dpi for the point coordinates */
 @REPLY
     int            count;         /* total count of children */
     VARARG(children,user_handles); /* children handles */
@@ -2836,7 +2857,7 @@ enum message_type
 @REQ(get_window_rectangles)
     user_handle_t  handle;        /* handle to the window */
     int            relative;      /* coords relative to (see below) */
-    struct ratio   dpi;           /* DPI to map to, or zero for per-monitor DPI */
+    unsigned int   dpi;           /* DPI to map to, or zero for per-monitor DPI */
 @REPLY
     struct rectangle window;      /* window rectangle */
     struct rectangle client;      /* client rectangle */
@@ -2871,7 +2892,7 @@ enum coords_relative
 @REQ(get_windows_offset)
     user_handle_t  from;          /* handle to the first window */
     user_handle_t  to;            /* handle to the second window */
-    struct ratio   dpi;           /* DPI to map to, or zero for per-monitor DPI */
+    unsigned int   dpi;           /* DPI to map to, or zero for per-monitor DPI */
 @REPLY
     int            x;             /* x coordinate offset */
     int            y;             /* y coordinate offset */
@@ -3478,16 +3499,17 @@ enum caret_state
 
 /* Create a security token */
 @REQ(create_token)
-    struct luid    token_id;
+    struct luid    auth_id;        /* authentication id */
     unsigned int   access;         /* access rights to the new token */
     int            primary;        /* is the new token to be a primary one? */
     int            impersonation_level; /* impersonation level of the new token */
     abstime_t      expire;         /* expiration time */
     int            group_count;
-    int            primary_group;
     int            priv_count;
     /* VARARG(objattr,object_attributes);  */
     /* VARARG(user,sid); */
+    /* VARARG(owner,sid); */
+    /* VARARG(primary_group,sid); */
     /* VARARG(groups,sid); */
     /* VARARG(privs,luid_attr); */
     /* VARARG(dacl,acl); */
@@ -3676,18 +3698,6 @@ struct handle_info
 @REPLY
     obj_handle_t   handle;        /* handle to the mailslot */
 @END
-
-
-/* Set mailslot information */
-@REQ(set_mailslot_info)
-    obj_handle_t   handle;        /* handle to the mailslot */
-    timeout_t      read_timeout;
-    unsigned int   flags;
-@REPLY
-    timeout_t      read_timeout;
-    unsigned int   max_msgsize;
-@END
-#define MAILSLOT_SET_READ_TIMEOUT  1
 
 
 /* Create a directory object */
@@ -3999,13 +4009,6 @@ struct handle_info
 @END
 
 
-/* set fd completion information */
-@REQ(set_fd_completion_mode)
-    obj_handle_t handle;          /* handle to a file or directory */
-    unsigned int flags;           /* completion notification flags */
-@END
-
-
 /* set fd disposition information */
 @REQ(set_fd_disp_info)
     obj_handle_t handle;          /* handle to a file or directory */
@@ -4022,13 +4025,6 @@ struct handle_info
     unsigned int flags;           /* FILE_RENAME_* flags */
     VARARG(name,unicode_str,namelen); /* NT name */
     VARARG(filename,string);      /* new file name */
-@END
-
-
-/* set fd eof information */
-@REQ(set_fd_eof_info)
-    obj_handle_t handle;        /* handle to a file or directory */
-    file_pos_t   eof;           /* offset of eof of file */
 @END
 
 
@@ -4248,11 +4244,31 @@ enum inproc_sync_type
 @END
 
 
+struct fd_desc
+{
+    int type;                           /* fd type, see below */
+    int format;                         /* DMA-BUF fourcc */
+    union
+    {
+        struct
+        {
+            unsigned __int64 modifier;  /* DRM format modifier */
+            int offset;                 /* plane offset */
+            int stride;                 /* plane stride */
+        } dma_buf;
+    };
+};
+#define FD_NONE       0                 /* object has no fd */
+#define FD_OPAQUE     1                 /* object uses Vulkan OPAQUE_FD */
+#define FD_DMA_BUF    2                 /* object uses Linux DMA-BUF fd */
+
+
 /* Create a global d3dkmt object */
 @REQ(d3dkmt_object_create)
     unsigned int        type;           /* d3dkmt object type */
     int                 fd;             /* host specific fd */
-    unsigned int        value;          /* initial value for keyed mutex */
+    struct fd_desc      fd_desc;        /* fd-specific metadata */
+    unsigned __int64    value;          /* initial value for keyed mutex */
     VARARG(runtime,bytes);              /* client runtime data */
 @REPLY
     d3dkmt_handle_t     global;         /* global d3dkmt handle */
@@ -4286,6 +4302,7 @@ enum inproc_sync_type
 @REPLY
     d3dkmt_handle_t     global;         /* global d3dkmt handle */
     obj_handle_t        handle;         /* internal handle of the server object */
+    struct fd_desc      fd_desc;        /* fd-specific metadata */
     data_size_t         runtime_size;   /* size of client runtime data */
     VARARG(runtime,bytes);              /* client runtime data */
 @END
@@ -4337,6 +4354,24 @@ enum inproc_sync_type
     unsigned __int64    fence_value;    /* semaphore fence value */
     data_size_t         runtime_size;   /* size of client runtime data */
     VARARG(runtime,bytes);              /* client runtime data */
+@END
+
+
+/* Wait on a global d3dkmt sync fence value */
+@REQ(d3dkmt_sync_wait)
+    d3dkmt_handle_t     sync;           /* sync global handle */
+    unsigned int        fence_value;    /* fence value to wait for */
+    obj_handle_t        wait_handle;    /* previously returned wait handle */
+    unsigned int        wait_status;    /* status returned from previous wait */
+@REPLY
+    obj_handle_t        wait_handle;    /* wait handle for pending acquire */
+@END
+
+
+/* Signal a global d3dkmt sync fence value */
+@REQ(d3dkmt_sync_signal)
+    d3dkmt_handle_t     sync;           /* sync global handle */
+    unsigned __int64    fence_value;    /* signaled fence value */
 @END
 
 

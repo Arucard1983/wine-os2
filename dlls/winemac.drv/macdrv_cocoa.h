@@ -34,8 +34,10 @@
 #define LoadResource MacLoadResource
 #define Polygon MacPolygon
 
+#include <Accelerate/Accelerate.h>
 #include <ApplicationServices/ApplicationServices.h>
 #include <Carbon/Carbon.h>
+#include <IOSurface/IOSurface.h>
 
 #undef GetCurrentProcess
 #undef GetCurrentThread
@@ -188,7 +190,6 @@ static inline CGPoint cgpoint_win_from_mac(CGPoint point)
 }
 
 extern int macdrv_start_cocoa_app(unsigned long long tickcount);
-extern void macdrv_window_rejected_focus(const struct macdrv_event *event);
 extern void macdrv_beep(void);
 extern void macdrv_set_application_icon(CFArrayRef images);
 extern void macdrv_quit_reply(int reply);
@@ -253,8 +254,6 @@ extern void macdrv_free_monitors(struct macdrv_monitor* monitors, int monitor_co
 
 /* event */
 enum {
-    APP_ACTIVATED,
-    APP_DEACTIVATED,
     APP_QUIT_REQUESTED,
     DISPLAYS_CHANGED,
     HOTKEY_PRESS,
@@ -274,15 +273,10 @@ enum {
     STATUS_ITEM_MOUSE_MOVE,
     WINDOW_BROUGHT_FORWARD,
     WINDOW_CLOSE_REQUESTED,
-    WINDOW_DID_MINIMIZE,
     WINDOW_DID_UNMINIMIZE,
     WINDOW_DRAG_BEGIN,
     WINDOW_DRAG_END,
     WINDOW_FRAME_CHANGED,
-    WINDOW_GOT_FOCUS,
-    WINDOW_LOST_FOCUS,
-    WINDOW_MAXIMIZE_REQUESTED,
-    WINDOW_MINIMIZE_REQUESTED,
     WINDOW_RESIZE_ENDED,
     WINDOW_RESTORE_REQUESTED,
     NUM_EVENT_TYPES
@@ -371,10 +365,6 @@ typedef struct macdrv_event {
             bool    in_resize;
             bool    skip_size_move_loop;
         }                                           window_frame_changed;
-        struct {
-            unsigned long   serial;
-            void           *tried_windows;
-        }                                           window_got_focus;
         struct {
             bool    keep_frame;
             CGRect  frame;
@@ -483,8 +473,8 @@ extern void macdrv_hide_cocoa_window(WineWindow *window);
 extern void macdrv_set_cocoa_window_frame(WineWindow *window, const CGRect* new_frame);
 extern void macdrv_get_cocoa_window_frame(WineWindow *window, CGRect* out_frame);
 extern void macdrv_set_cocoa_parent_window(WineWindow *window, WineWindow *parent);
-extern void macdrv_window_set_color_image(WineWindow *window, CGImageRef image, CGRect rect, CGRect dirty);
-extern void macdrv_window_set_shape_image(WineWindow *window, CGImageRef image);
+extern void macdrv_window_set_io_surface(WineWindow *window, IOSurfaceRef s, CGRect rect, CGRect dirty);
+extern void macdrv_window_shape_changed(WineWindow *window, bool has_shape);
 extern void macdrv_set_window_shape(WineWindow *window, const CGRect *rects, int count);
 extern void macdrv_set_window_alpha(WineWindow *window, CGFloat alpha);
 extern void macdrv_window_use_per_pixel_alpha(WineWindow *window, bool use_per_pixel_alpha);
@@ -516,7 +506,6 @@ extern void macdrv_set_view_backing_size(WineContentView *view, const int backin
 extern uint32_t macdrv_window_background_color(void);
 extern bool macdrv_send_keydown_to_input_source(int keyc, unsigned int flags, int repeat, void *update);
 extern void macdrv_clear_ime_text(void);
-extern bool macdrv_is_any_wine_window_visible(void);
 
 
 /* keyboard */

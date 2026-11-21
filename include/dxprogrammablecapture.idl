@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Santino Mazza
+ * Copyright (C) 2026 Biswapriyo Nath
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -14,53 +14,16 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
- */
+*/
 
-#include <bcrypt.h>
+import "oaidl.idl";
 
-enum algid
+[
+    uuid(9f251514-9d4d-4902-9d60-18988ab7d4b5),
+    object
+]
+interface IDXGraphicsAnalysis : IUnknown
 {
-    /* symmetric */
-    AES,
-    /* asymmetric */
-    RSA,
-    DSA,
-    ECDSA,
-    ECDSA_P256,
-};
-
-struct key
-{
-    enum algid algid;
-    BCRYPT_KEY_HANDLE bcrypt_key;
-};
-
-struct storage_provider
-{
-};
-
-enum object_type
-{
-    KEY,
-    STORAGE_PROVIDER,
-};
-
-struct object_property
-{
-    WCHAR *key;
-    DWORD value_size;
-    void *value;
-};
-
-struct object
-{
-    enum object_type type;
-    LONG refs;
-    DWORD num_properties;
-    struct object_property *properties;
-    union
-    {
-        struct key key;
-        struct storage_provider storage_provider;
-    };
-};
+    void BeginCapture();
+    void EndCapture();
+}
