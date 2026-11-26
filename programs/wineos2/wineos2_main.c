@@ -13,6 +13,7 @@
 
 #include "os2types.h"
 #include "wineos2_286cpu.h"
+#include "wineos2_386cpu.h"
 #include "wineos2_env.h"
 
 /* ENFORCED FIX: Centralized global memory allocation instance for the shared virtual LDT and IDT */
@@ -22,7 +23,7 @@ OS2_IDT_ENTRY virtual_idt[IDT_MAX_ENTRIES];
 /* Forward declarations for the loader components */
 int lx_process_object_pages(FILE* file, uint32_t ne_base, void* hdr, void* obj, void* addr);
 int lx_process_ne_segments(FILE* file, uint32_t ne_base, void* ne_header_ptr);
-int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, void* lx_hdr, void* allocated_objects);
+int wineos2_resolve_lx_fixups(FILE* file, uint32_t ne_base, void* lx_hdr, void* objects, void* allocated_objects);
 void wineos2_initialize_lx_stack(void* stack_ptr, uint32_t stack_size, CONTEXT* thread_ctx);
 
 #pragma pack(push, 1)
@@ -71,29 +72,57 @@ typedef struct {
 
 /* OS/2 2.x+ LX (Linear Executable) Header Structure */
 typedef struct {
-    uint8_t  magic[2];
-    uint8_t  border;
-    uint8_t  worder;
-    uint32_t level;
-    uint16_t cpu_type;
-    uint16_t os_type;
-    uint32_t version;
-    uint32_t flags;
-    uint32_t num_pages;
-    uint32_t eip_obj;
-    uint32_t eip;
-    uint32_t esp_obj;
-    uint32_t esp;
-    uint32_t page_size;
-    uint32_t pages_shift;
-    uint32_t fixup_sec_size;
-    uint32_t fixup_sec_chk;
-    uint32_t loader_sec_size;
-    uint32_t loader_sec_chk;
-    uint32_t obj_tbl_offset;
-    uint32_t num_objects;
-    uint32_t obj_map_offset;
+    uint8_t  magic[2];               /* 0x00: 'LX' */
+    uint8_t  border;                 /* 0x02 */
+    uint8_t  worder;                 /* 0x03 */
+    uint32_t level;                  /* 0x04 */
+    uint16_t cpu_type;               /* 0x08 */
+    uint16_t os_type;                /* 0x0A */
+    uint32_t version;                /* 0x0C */
+    uint32_t flags;                  /* 0x10 */
+    uint32_t num_pages;              /* 0x14 */
+    uint32_t eip_obj;                /* 0x18 */
+    uint32_t eip;                    /* 0x1C */
+    uint32_t esp_obj;                /* 0x20 */
+    uint32_t esp;                    /* 0x24 */
+    uint32_t page_size;              /* 0x28 */
+    uint32_t pages_shift;            /* 0x2C */
+    uint32_t fixup_sec_size;         /* 0x30 */
+    uint32_t fixup_sec_chk;          /* 0x34 */
+    uint32_t loader_sec_size;        /* 0x38 */
+    uint32_t loader_sec_chk;         /* 0x3C */
+    uint32_t obj_tbl_offset;         /* 0x40 */
+    uint32_t num_objects;            /* 0x44 */
+    uint32_t obj_map_offset;         /* 0x48 */
+    uint32_t itermap_offset;         /* 0x4C */
+    uint32_t rsrc_tbl_offset;        /* 0x50 */
+    uint32_t num_rsrcs;              /* 0x54 */
+    uint32_t resid_name_tbl_offset;  /* 0x58 */
+    uint32_t entry_tbl_offset;       /* 0x5C */
+    uint32_t mod_dir_offset;         /* 0x60 */
+    uint32_t num_mod_dirs;           /* 0x64 */
+    uint32_t fixup_page_tbl_offset;  /* 0x68 */
+    uint32_t fixup_rec_tbl_offset;   /* 0x6C */
+    uint32_t imp_mod_tbl_offset;     /* 0x70 */
+    uint32_t num_imp_mods;           /* 0x74 */
+    uint32_t imp_proc_tbl_offset;    /* 0x78 */
+    uint32_t per_page_chk_offset;    /* 0x7C */
+    uint32_t data_pages_offset;      /* 0x80 */
+    uint32_t num_preload_pages;      /* 0x84 */
+    uint32_t nonres_name_tbl_offset; /* 0x88 */
+    uint32_t nonres_name_tbl_len;    /* 0x8C */
+    uint32_t nonres_name_tbl_chk;    /* 0x90 */
+    uint32_t auto_ds_obj;            /* 0x94 */
+    uint32_t debug_info_offset;      /* 0x98 */
+    uint32_t debug_info_len;         /* 0x9C */
+    uint32_t num_inst_preload;       /* 0xA0 */
+    uint32_t num_inst_demand;        /* 0xA4 */
+    uint32_t heap_size;              /* 0xA8 */
+    uint32_t stack_size;             /* 0xAC */
+    uint8_t  reserved[20];           /* 0xB0..0xC3 */
 } LX_HEADER;
+
+
 
 typedef struct {
     uint32_t size;
@@ -132,6 +161,7 @@ void wineos2_initialize_lx_stack(void* stack_ptr, uint32_t stack_size, CONTEXT* 
 
 int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t active_pib_address) {
     LX_HEADER lx_hdr;
+    LX_OBJECT lx_objects[MAX_LX_OBJECTS];
     LX_ALLOCATED_OBJECT allocated_objects[MAX_LX_OBJECTS];
     uint32_t target_entry_eip = 0;
     uint32_t absolute_obj_table;
@@ -142,6 +172,10 @@ int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t ac
 
     if (fseek(file, ne_lfanew, SEEK_SET) != 0) return 0;
     if (fread(&lx_hdr, sizeof(LX_HEADER), 1, file) != 1) return 0;
+
+    printf("[LX Header] Size=%zu | Objects=%u | Pages=%u | ImpMods=%u | ImpModOff=0x%X | ResTab=0x%X | NonResTab=0x%X\n",
+           sizeof(LX_HEADER), lx_hdr.num_objects, lx_hdr.num_pages, lx_hdr.num_imp_mods,
+           lx_hdr.imp_mod_tbl_offset, lx_hdr.resid_name_tbl_offset, lx_hdr.nonres_name_tbl_offset);
 
     printf("[Loader] Parsing LX (Linear Executable) 32-bit OS/2 structure...\n");
     absolute_obj_table = ne_lfanew + lx_hdr.obj_tbl_offset;
@@ -162,6 +196,8 @@ int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t ac
             return 0;
         }
 
+        if (fread(&lx_objects[i], sizeof(LX_OBJECT), 1, file) != 1) break;
+        if (lx_objects[i].size == 0) continue;
         allocated_objects[i].host_address = allocated_address;
         allocated_objects[i].base_addr = obj.base_addr;
         allocated_objects[i].size = obj.size;
@@ -177,7 +213,9 @@ int wineos2_execute_lx_process_win32(FILE* file, uint32_t ne_lfanew, uint32_t ac
         if (i + 1 == lx_hdr.eip_obj) target_entry_eip = obj.base_addr + lx_hdr.eip;
     }
 
-    wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr, allocated_objects);
+    lx_process_object_pages(file, ne_lfanew, &lx_hdr, lx_objects, allocated_objects);
+    wineos2_resolve_lx_fixups(file, ne_lfanew, &lx_hdr, lx_objects, allocated_objects);
+
 
     STARTUPINFOA si = { sizeof(STARTUPINFOA) };
     PROCESS_INFORMATION pi;
