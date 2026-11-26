@@ -1,1 +1,16 @@
-a
+# Wine-OS/2 Contrib: POSIX Subsystem for Wine
+
+MODULE    = posix.exe
+UNIXLIB   = posix.so
+IMPORTS   = kernel32 ntdll
+
+EXTRADLLFLAGS = -mconsole
+
+C_SRCS = \
+	posix.c \
+	unixlib.c
+
+
+SOURCES = \
+	posix.c \
+	unixlib.c
