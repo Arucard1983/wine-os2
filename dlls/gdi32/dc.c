@@ -1049,7 +1049,7 @@ INT WINAPI SetTextCharacterExtra( HDC hdc, INT extra )
     INT ret;
 
     if (is_meta_dc( hdc )) return METADC_SetTextCharacterExtra( hdc, extra );
-    if (!(dc_attr = get_dc_attr( hdc ))) return 0x8000000;
+    if (!(dc_attr = get_dc_attr( hdc ))) return 0x80000000;
     ret = dc_attr->char_extra;
     dc_attr->char_extra = extra;
     return ret;
@@ -2641,6 +2641,12 @@ INT WINAPI SetAbortProc( HDC hdc, ABORTPROC abrtprc )
  */
 INT WINAPI SetICMMode( HDC hdc, INT mode )
 {
+    DC_ATTR *dc_attr;
+
+    if ((mode == ICM_OFF || mode == ICM_ON) && (dc_attr = get_dc_attr( hdc )) &&
+        dc_attr->emf && !EMFDC_SetICMMode( dc_attr, mode ))
+        return 0;
+
     /* FIXME: Assume that ICM is always off, and cannot be turned on */
     switch (mode)
     {
@@ -2821,7 +2827,7 @@ static BOOL read_emfspool_record( struct spool_handle *sh )
         }
         else if (sh->devmodes_no == sh->devmodes_size)
         {
-            void *alloc = HeapReAlloc( GetProcessHeap(), 0, sh->devmodes, sh->devmodes_size * 2 );
+            void *alloc = HeapReAlloc( GetProcessHeap(), 0, sh->devmodes, sizeof(*sh->devmodes) * sh->devmodes_size * 2 );
 
             if (!alloc)
             {

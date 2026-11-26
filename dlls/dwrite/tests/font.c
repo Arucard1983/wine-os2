@@ -100,6 +100,21 @@
 
 DEFINE_EXPECT(setfillmode);
 
+#define check_interface(a, b, c) check_interface_(__LINE__, a, b, c)
+static void check_interface_(unsigned int line, void *iface_ptr, REFIID iid, BOOL supported)
+{
+    IUnknown *iface = iface_ptr;
+    HRESULT hr, expected_hr;
+    IUnknown *unk;
+
+    expected_hr = supported ? S_OK : E_NOINTERFACE;
+
+    hr = IUnknown_QueryInterface(iface, iid, (void **)&unk);
+    ok_(__FILE__, line)(hr == expected_hr, "Got hr %#lx, expected %#lx.\n", hr, expected_hr);
+    if (SUCCEEDED(hr))
+        IUnknown_Release(unk);
+}
+
 #define EXPECT_REF(obj,ref) _expect_ref((IUnknown*)obj, ref, __LINE__)
 static void _expect_ref(IUnknown* obj, ULONG ref, int line)
 {
@@ -4526,6 +4541,13 @@ static void test_CreateFontFaceFromHdc(void)
     ok(hr == E_NOTIMPL, "Unexpected hr %#lx.\n", hr);
 
     fragment_context = NULL;
+    hr = IDWriteFontFileStream_ReadFileFragment(stream, &fragment, size - 1, 1, &fragment_context);
+    ok(hr == S_OK, "Failed to read fragment, hr %#lx.\n", hr);
+    ok(!!fragment_context, "Unexpected context %p.\n", fragment_context);
+    ok(fragment == fragment_context, "Unexpected data pointer %p, context %p.\n", fragment, fragment_context);
+    IDWriteFontFileStream_ReleaseFileFragment(stream, fragment_context);
+
+    fragment_context = NULL;
     hr = IDWriteFontFileStream_ReadFileFragment(stream, &fragment, 0, size, &fragment_context);
     ok(hr == S_OK, "Failed to read fragment, hr %#lx.\n", hr);
     ok(fragment_context != NULL, "Unexpected context %p.\n", fragment_context);
@@ -5123,6 +5145,14 @@ static void test_ReadFileFragment(void)
 
     hr = IDWriteFontFileStream_GetFileSize(stream, &filesize);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    fragment = NULL;
+    context = (void *)0xdeadbeef;
+    hr = IDWriteFontFileStream_ReadFileFragment(stream, &fragment, filesize - 1, 1, &context);
+    ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+    ok(!context, "Unexpected context %p.\n", context);
+    ok(!!fragment, "Unexpected fragment pointer %p.\n", fragment);
+    IDWriteFontFileStream_ReleaseFileFragment(stream, context);
 
     /* reading past the end of the stream */
     fragment = (void*)0xdeadbeef;
@@ -5781,8 +5811,13 @@ static void test_CreateRenderingParams(void)
     IDWriteRenderingParams_Release(params);
 
     hr = IDWriteFactory_QueryInterface(factory, &IID_IDWriteFactory3, (void**)&factory3);
-    if (hr == S_OK) {
+    if (hr == S_OK)
+    {
         IDWriteRenderingParams3 *params3;
+
+        hr = IDWriteFactory3_CreateCustomRenderingParams(factory3, 1.0f, 0.0f, 0.0f, 1.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
+                DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED + 1, DWRITE_GRID_FIT_MODE_DEFAULT, &params3);
+        ok(hr == E_INVALIDARG, "Unexpected hr %#lx.\n", hr);
 
         hr = IDWriteFactory3_CreateCustomRenderingParams(factory3, 1.0f, 0.0f, 0.0f, 1.0f, DWRITE_PIXEL_GEOMETRY_FLAT,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC_DOWNSAMPLED, DWRITE_GRID_FIT_MODE_DEFAULT, &params3);
@@ -8245,7 +8280,7 @@ static void test_CreateFontFaceReference(void)
     hr = IDWriteFactory3_CreateFontFileReference(factory, path, NULL, &file);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
-    hr = IDWriteFactory3_CreateFontFaceReference_(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
+    hr = IDWriteFactory3_CreateFontFaceReference_1(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
 
     hr = IDWriteFontFaceReference_GetFontFile(ref, &file1);
@@ -8859,7 +8894,7 @@ static void test_ComputeGlyphOrigins(void)
         get_expected_glyph_origins(origins_tests[i].baseline_origin, &run, expected_origins);
 
         memset(origins, 0, sizeof(origins));
-        hr = IDWriteFactory4_ComputeGlyphOrigins_(factory, &run, origins_tests[i].baseline_origin, origins);
+        hr = IDWriteFactory4_ComputeGlyphOrigins_1(factory, &run, origins_tests[i].baseline_origin, origins);
         ok(hr == S_OK, "%u: failed to compute glyph origins, hr %#lx.\n", i, hr);
         for (j = 0; j < run.glyphCount; ++j)
         {
@@ -8888,7 +8923,7 @@ static void test_ComputeGlyphOrigins(void)
     baseline_origin.y = 321.0f;
 
     memset(origins, 0, sizeof(origins));
-    hr = IDWriteFactory4_ComputeGlyphOrigins_(factory, &run, baseline_origin, origins);
+    hr = IDWriteFactory4_ComputeGlyphOrigins_1(factory, &run, baseline_origin, origins);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
     ok(origins[0].x == 123.0f && origins[0].y == 321.0f, "origins[0] %f,%f\n", origins[0].x, origins[0].y);
     ok(origins[1].x == 133.0f && origins[1].y == 321.0f, "origins[1] %f,%f\n", origins[1].x, origins[1].y);
@@ -9282,6 +9317,13 @@ static void test_inmemory_file_loader(void)
     ref_key = 0;
     hr = IDWriteInMemoryFontFileLoader_CreateStreamFromKey(inmemory, &ref_key, sizeof(ref_key), &stream2);
     ok(hr == S_OK, "Failed to create a stream, hr %#lx.\n", hr);
+
+    context2 = (void *)0xdeadbeef;
+    frag_start = NULL;
+    hr = IDWriteFontFileStream_ReadFileFragment(stream2, &frag_start, file_size - 1, 1, &context2);
+    ok(hr == S_OK, "Failed to read a fragment, hr %#lx.\n", hr);
+    ok(!context2, "Unexpected context %p.\n", context2);
+    ok(frag_start == ((char *)data + file_size - 1), "Unexpected fragment pointer %p.\n", frag_start);
 
     context2 = (void *)0xdeadbeef;
     hr = IDWriteFontFileStream_ReadFileFragment(stream2, &frag_start, 0, file_size, &context2);
@@ -10599,12 +10641,12 @@ static void test_CreateFontCollectionFromFontSet(void)
     ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
 
     /* Add same file, with explicit properties. */
-    hr = IDWriteFactory5_CreateFontFaceReference_(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
+    hr = IDWriteFactory5_CreateFontFaceReference_1(factory, file, 0, DWRITE_FONT_SIMULATIONS_NONE, &ref);
     ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
     props[0].propertyId = DWRITE_FONT_PROPERTY_ID_WEIGHT_STRETCH_STYLE_FAMILY_NAME;
     props[0].propertyValue = L"Another Font";
     props[0].localeName = L"en-US";
-    hr = IDWriteFontSetBuilder1_AddFontFaceReference_(builder, ref, props, 1);
+    hr = IDWriteFontSetBuilder1_AddFontFaceReference_1(builder, ref, props, 1);
     todo_wine
     ok(hr == S_OK, "Unexpected hr %#lx.\n",hr);
     IDWriteFontFaceReference_Release(ref);
@@ -10656,6 +10698,9 @@ static void test_GetMatchingFontsByLOGFONT(void)
 
     hr = IDWriteFactory3_GetSystemFontSet(factory, &systemset);
     ok(hr == S_OK, "Unexpected hr %#lx.\n", hr);
+
+    check_interface(systemset, &IID_IDWriteFontSet, TRUE);
+    check_interface(systemset, &IID_IUnknown, TRUE);
 
     interop = NULL;
     hr = IDWriteFactory3_GetGdiInterop(factory, &interop0);

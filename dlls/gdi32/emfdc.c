@@ -1818,7 +1818,7 @@ BOOL EMFDC_MaskBlt( DC_ATTR *dc_attr, INT x_dst, INT y_dst, INT width_dst, INT h
 err:
     HeapFree( GetProcessHeap(), 0, emr );
     if (mask_bitmap != mask) DeleteObject( mask_bitmap );
-    if (mask_dc != hdc_src) DeleteObject( mask_dc );
+    if (mask_dc != hdc_src) DeleteDC( mask_dc );
     if (blit_bitmap != bitmap) DeleteObject( blit_bitmap );
     if (blit_dc != hdc_src) DeleteDC( blit_dc );
     return ret;
@@ -1872,7 +1872,7 @@ BOOL EMFDC_PlgBlt( DC_ATTR *dc_attr, const POINT *points, HDC hdc_src, INT x_src
         x_min = min( x_min, points[i].x );
         y_min = min( y_min, points[i].y );
         x_max = max( x_max, points[i].x );
-        y_max = max( y_min, points[i].y );
+        y_max = max( y_max, points[i].y );
     }
     emr->rclBounds.left = x_min;
     emr->rclBounds.top = y_min;
@@ -1921,7 +1921,7 @@ BOOL EMFDC_PlgBlt( DC_ATTR *dc_attr, const POINT *points, HDC hdc_src, INT x_src
 err:
     HeapFree( GetProcessHeap(), 0, emr );
     if (mask_bitmap != mask) DeleteObject( mask_bitmap );
-    if (mask_dc != hdc_src) DeleteObject( mask_dc );
+    if (mask_dc != hdc_src) DeleteDC( mask_dc );
     if (blit_bitmap != bitmap) DeleteObject( blit_bitmap );
     if (blit_dc != hdc_src) DeleteDC( blit_dc );
     return ret;
@@ -2166,6 +2166,16 @@ BOOL EMFDC_SetBkMode( DC_ATTR *dc_attr, INT mode )
     EMRSETBKMODE emr;
 
     emr.emr.iType = EMR_SETBKMODE;
+    emr.emr.nSize = sizeof(emr);
+    emr.iMode = mode;
+    return emfdc_record( get_dc_emf( dc_attr ), &emr.emr );
+}
+
+BOOL EMFDC_SetICMMode( DC_ATTR *dc_attr, INT mode )
+{
+    EMRSETICMMODE emr;
+
+    emr.emr.iType = EMR_SETICMMODE;
     emr.emr.nSize = sizeof(emr);
     emr.iMode = mode;
     return emfdc_record( get_dc_emf( dc_attr ), &emr.emr );

@@ -237,6 +237,7 @@ static int uffd_fd, pagemap_fd;
 static struct file_view *view_block_start, *view_block_end, *next_free_view;
 static const size_t view_block_size = 0x100000;
 static BOOL force_exec_prot;  /* whether to force PROT_EXEC on all PROT_READ mmaps */
+static BOOL write_exec_disallowed;  /* whether PROT_WRITE | PROT_EXEC is disallowed by the OS */
 static BOOL enable_write_exceptions;  /* raise exception on writes to executable memory */
 
 static UINT_PTR *mem_areas;
@@ -281,6 +282,15 @@ static inline BOOL is_vprot_exec_write( BYTE vprot )
 static inline BOOL needs_force_exec( const void *addr )
 {
     return force_exec_prot && (UINT_PTR)addr <= limit_4g - 1;
+}
+
+/* check if a write or exec fault can be caused by write+exec being disallowed */
+static inline BOOL is_write_exec_fault( const void *addr, BYTE vprot )
+{
+    if (!write_exec_disallowed) return FALSE;
+    if (!(vprot & (VPROT_WRITE | VPROT_WRITECOPY))) return FALSE;  /* not writable */
+    if (vprot & VPROT_EXEC) return TRUE;  /* explicit exec */
+    return needs_force_exec( addr ) && (vprot & VPROT_READ); /* forced exec */
 }
 
 /* mmap() anonymous memory at a fixed address */
@@ -909,13 +919,14 @@ static SIZE_T get_vprot_range_size( char *base, SIZE_T size, BYTE mask, BYTE *vp
 
     vprot_word = word_from_byte * *vprot;
     mask_word = word_from_byte * mask;
-    for (; curr_idx < end_idx; curr_idx += sizeof(UINT_PTR), vprot_ptr += sizeof(UINT_PTR))
+    while (curr_idx < end_idx)
     {
 #ifdef _WIN64
         if (!(curr_idx & pages_vprot_mask) && !(vprot_ptr = pages_vprot[curr_idx >> pages_vprot_shift]))
         {
             if (*vprot & mask) return (curr_idx - start_idx) << page_shift;
             curr_idx += pages_vprot_mask + 1;
+            continue;
         }
 #endif
         if ((vprot_word ^ *(UINT_PTR *)vprot_ptr) & mask_word)
@@ -924,6 +935,8 @@ static SIZE_T get_vprot_range_size( char *base, SIZE_T size, BYTE mask, BYTE *vp
                 if ((*vprot ^ *vprot_ptr) & mask) break;
             return (curr_idx - start_idx) << page_shift;
         }
+        curr_idx += sizeof(UINT_PTR);
+        vprot_ptr += sizeof(UINT_PTR);
     }
     return size;
 }
@@ -1719,6 +1732,9 @@ static NTSTATUS get_vprot_flags( DWORD protect, unsigned int *vprot, BOOL image 
  */
 static inline int mprotect_exec( void *base, size_t size, int unix_prot )
 {
+    if (write_exec_disallowed && (unix_prot & PROT_WRITE))
+        return mprotect( base, size, unix_prot & ~PROT_EXEC );
+
     if (needs_force_exec( base ) && (unix_prot & PROT_READ) && !(unix_prot & PROT_EXEC))
     {
         TRACE( "forcing exec permission on %p-%p\n", base, (char *)base + size - 1 );
@@ -2601,6 +2617,21 @@ static void *get_host_addr_space_limit(void)
     anon_mmap_tryfixed( address_space_limit, host_page_size, PROT_NONE, MAP_NORESERVE );
     return address_space_limit;
 #endif
+}
+
+/***********************************************************************
+ *           is_write_exec_disallowed
+ */
+static BOOL is_write_exec_disallowed( void *addr )
+{
+    if (mprotect( addr, host_page_size, PROT_READ | PROT_WRITE | PROT_EXEC ))
+    {
+        if (errno != EACCES) return FALSE;
+        TRACE( "W^X detected, enabling workarounds\n" );
+        return TRUE;
+    }
+    mprotect( addr, host_page_size, PROT_READ | PROT_WRITE );
+    return FALSE;
 }
 
 #ifdef __aarch64__
@@ -3506,6 +3537,8 @@ void virtual_init(void)
     view_block_start = anon_mmap_alloc( view_block_size, PROT_READ | PROT_WRITE );
     view_block_end = view_block_start + view_block_size / sizeof(*view_block_start);
     assert( view_block_start != MAP_FAILED );
+
+    write_exec_disallowed = is_write_exec_disallowed( view_block_start );
     wine_rb_init( &views_tree, compare_view );
     kernel_writewatch_init();
 }
@@ -4536,7 +4569,7 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
     mutex_lock( &virtual_mutex );  /* no need for signal masking inside signal handler */
     vprot = get_host_page_vprot( page );
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(__x86_64__)
     /* Rosetta on Apple Silicon misreports certain write faults as read faults. */
     if (err == EXCEPTION_READ_FAULT && (get_unix_prot( vprot ) & PROT_READ))
     {
@@ -4572,11 +4605,24 @@ NTSTATUS virtual_handle_fault( struct thread_data *data, EXCEPTION_RECORD *rec, 
                 mprotect_range( page, host_page_size, 0, 0 );
             }
         }
+        else if (is_write_exec_fault( page, vprot ))
+        {
+            mprotect_range( page, host_page_size, 0, VPROT_EXEC );
+            ret = STATUS_SUCCESS;
+        }
         /* ignore fault if page is writable now */
         if (get_unix_prot( get_host_page_vprot( page )) & PROT_WRITE)
         {
             if ((vprot & VPROT_WRITEWATCH) || is_write_watch_range( page, 1 ))
                 ret = STATUS_SUCCESS;
+        }
+    }
+    else if (err == EXCEPTION_EXECUTE_FAULT)
+    {
+        if (is_write_exec_fault( page, vprot ))
+        {
+            mprotect_range( page, host_page_size, 0, VPROT_WRITE | VPROT_WRITECOPY );
+            ret = STATUS_SUCCESS;
         }
     }
     mutex_unlock( &virtual_mutex );

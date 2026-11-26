@@ -4531,6 +4531,18 @@ static void test_multisample_stretch_rect(void)
         D3DTEXF_POINT,
         D3DTEXF_LINEAR,
     };
+    static const struct
+    {
+        struct vec3 position;
+        unsigned int diffuse;
+    }
+    quad[] =
+    {
+        {{-1.0f, -1.0f, 0.1f}, 0x00808080},
+        {{-1.0f,  1.0f, 0.1f}, 0x00808080},
+        {{ 1.0f, -1.0f, 0.1f}, 0x00808080},
+        {{ 1.0f,  1.0f, 0.1f}, 0x00808080},
+    };
     IDirect3DSurface9 *rt, *ms_rt, *ms_rt2, *rt_r5g6b5;
     struct surface_readback rb;
     IDirect3DDevice9 *device;
@@ -4689,6 +4701,62 @@ static void test_multisample_stretch_rect(void)
     }
 
     IDirect3DSurface9_Release(rt_r5g6b5);
+
+    /* sRGB. Clears are affected by SRGBWRITEENABLE (see clear_test), but a draw is needed anyway to
+     * make the state stick. So just draw. */
+    hr = IDirect3DDevice9_SetRenderTarget(device, 0, ms_rt);
+    ok(hr == D3D_OK, "Got unexpected hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_SetFVF(device, D3DFVF_XYZ | D3DFVF_DIFFUSE);
+    ok(SUCCEEDED(hr), "Failed to set FVF, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_SetRenderState(device, D3DRS_SRGBWRITEENABLE, TRUE);
+    ok(SUCCEEDED(hr), "Failed to set render state, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_SetRenderState(device, D3DRS_LIGHTING, FALSE);
+    ok(SUCCEEDED(hr), "Failed to set render state, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_SetRenderState(device, D3DRS_ZENABLE, FALSE);
+    ok(SUCCEEDED(hr), "Failed to set render state, hr %#lx.\n", hr);
+
+    hr = IDirect3DDevice9_BeginScene(device);
+    ok(SUCCEEDED(hr), "Failed to begin scene, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_DrawPrimitiveUP(device, D3DPT_TRIANGLESTRIP, 2, quad, sizeof(*quad));
+    ok(SUCCEEDED(hr), "Failed to draw, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_EndScene(device);
+    ok(SUCCEEDED(hr), "Failed to end scene, hr %#lx.\n", hr);
+
+    hr = IDirect3DDevice9_StretchRect(device, ms_rt, NULL, rt, NULL, D3DTEXF_NONE);
+    ok(hr == D3D_OK, "Multisample resolve: got unexpected hr %#lx.\n", hr);
+
+    get_rt_readback(rt, &rb);
+    color = get_readback_color(&rb, 1, 1);
+    ok(color_match(color, 0x00bbbbbb, 1), "Test %u, got unexpected color 0x%08x.\n", i, color);
+    release_surface_readback(&rb);
+
+    hr = IDirect3DDevice9_SetRenderState(device, D3DRS_SRGBWRITEENABLE, FALSE);
+    ok(SUCCEEDED(hr), "Failed to set render state, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_SetRenderTarget(device, 0, rt);
+    ok(hr == D3D_OK, "Got unexpected hr %#lx.\n", hr);
+
+    /* Like the previous draw, this one is to make the SRGBWRITEENABLE = FALSE stick. We read it
+     * back and check because we can, but the actually interesting part is the StretchRect
+     * afterwards. */
+    hr = IDirect3DDevice9_BeginScene(device);
+    ok(SUCCEEDED(hr), "Failed to begin scene, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_DrawPrimitiveUP(device, D3DPT_TRIANGLESTRIP, 2, quad, sizeof(*quad));
+    ok(SUCCEEDED(hr), "Failed to draw, hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_EndScene(device);
+    ok(SUCCEEDED(hr), "Failed to end scene, hr %#lx.\n", hr);
+    get_rt_readback(rt, &rb);
+    color = get_readback_color(&rb, 1, 1);
+    ok(color_match(color, 0x00808080, 1), "Test %u, got unexpected color 0x%08x.\n", i, color);
+    release_surface_readback(&rb);
+
+    /* The resolve result is the same as it was with SRGBWRITEENABLE on. Note that the content of
+     * the source ms_rt surface is unchanged. */
+    hr = IDirect3DDevice9_StretchRect(device, ms_rt, NULL, rt, NULL, D3DTEXF_NONE);
+    ok(hr == D3D_OK, "Multisample resolve: got unexpected hr %#lx.\n", hr);
+    get_rt_readback(rt, &rb);
+    color = get_readback_color(&rb, 1, 1);
+    ok(color_match(color, 0x00bbbbbb, 1), "Test %u, got unexpected color 0x%08x.\n", i, color);
+    release_surface_readback(&rb);
 
 done:
     IDirect3DSurface9_Release(ms_rt2);
@@ -27582,6 +27650,104 @@ static void test_managed_evict(void)
     release_test_context(&context);
 }
 
+static void test_shader_reset(void)
+{
+    static const struct vec4 colours[] = {{0.0f, 1.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}};
+    static const unsigned int expected[] = {0x0000ff00, 0x000000ff};
+    struct d3d9_test_context context;
+    IDirect3DVertexShader9 *vs;
+    IDirect3DPixelShader9 *ps;
+    IDirect3DDevice9 *device;
+    D3DCAPS9 caps;
+    unsigned int i;
+    HRESULT hr;
+
+    static const DWORD vs_code[] =
+    {
+        0xfffe0200,                                         /* vs_2_0               */
+        0x0200001f, 0x80000000, 0x900f0000,                 /* dcl_position v0      */
+        0x0200001f, 0x8000000a, 0x900f0001,                 /* dcl_color0 v1        */
+        0x02000001, 0xc00f0000, 0x90e40000,                 /* mov oPos, v0         */
+        0x02000001, 0xd00f0000, 0x90e40001,                 /* mov oD0, v1          */
+        0x0000ffff                                          /* end                  */
+    };
+    static const DWORD ps_code[] =
+    {
+        0xffff0101,                                         /* ps_1_1               */
+        0x00000001, 0x800f0000, 0xa0e40000,                 /* mov r0, c0           */
+        0x0000ffff                                          /* end                  */
+    };
+    static const struct
+    {
+        struct vec3 position;
+        DWORD diffuse;
+    }
+    quad[] =
+    {
+        {{-1.0f, -1.0f, 0.0f}, 0xff00ff00},
+        {{-1.0f,  1.0f, 0.0f}, 0xff00ff00},
+        {{ 1.0f, -1.0f, 0.0f}, 0xff00ff00},
+        {{ 1.0f,  1.0f, 0.0f}, 0xff00ff00},
+    };
+
+    if (!init_test_context(&context))
+        return;
+    device = context.device;
+
+    hr = IDirect3DDevice9_GetDeviceCaps(device, &caps);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    if (caps.VertexShaderVersion < D3DVS_VERSION(2, 0) || caps.PixelShaderVersion < D3DPS_VERSION(1, 1))
+    {
+        skip("No vs_2_0 or ps_1_1 support, skipping tests.\n");
+        release_test_context(&context);
+        return;
+    }
+
+    hr = IDirect3DDevice9_CreateVertexShader(device, vs_code, &vs);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+    hr = IDirect3DDevice9_CreatePixelShader(device, ps_code, &ps);
+    ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+    /* Shaders survive a device reset, and should still be usable afterwards,
+     * including with new constants. */
+    for (i = 0; i < 2; ++i)
+    {
+        if (i)
+        {
+            hr = reset_device(&context);
+            ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        }
+
+        hr = IDirect3DDevice9_Clear(device, 0, NULL, D3DCLEAR_TARGET, 0xffff0000, 0.0f, 0);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_SetRenderState(device, D3DRS_ZENABLE, FALSE);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_SetRenderState(device, D3DRS_LIGHTING, FALSE);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_SetFVF(device, D3DFVF_XYZ | D3DFVF_DIFFUSE);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_SetVertexShader(device, vs);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_SetPixelShader(device, ps);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_SetPixelShaderConstantF(device, 0, &colours[i].x, 1);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        hr = IDirect3DDevice9_BeginScene(device);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_DrawPrimitiveUP(device, D3DPT_TRIANGLESTRIP, 2, quad, sizeof(*quad));
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+        hr = IDirect3DDevice9_EndScene(device);
+        ok(hr == S_OK, "Got hr %#lx.\n", hr);
+
+        check_rt_color(context.backbuffer, expected[i]);
+    }
+
+    IDirect3DVertexShader9_Release(vs);
+    IDirect3DPixelShader9_Release(ps);
+    release_test_context(&context);
+}
+
 static void test_managed_generate_mipmap(void)
 {
     struct d3d9_test_context context;
@@ -29597,6 +29763,7 @@ START_TEST(visual)
     test_filling_convention();
     test_managed_reset();
     test_managed_evict();
+    test_shader_reset();
     test_managed_generate_mipmap();
     test_mipmap_upload();
     test_default_diffuse();

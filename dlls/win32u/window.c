@@ -2392,7 +2392,6 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
             wine_server_add_data( req, extra_rects, sizeof(extra_rects) );
         }
         if (new_surface) req->paint_flags |= SET_WINPOS_PAINT_SURFACE;
-        if (is_layered) req->paint_flags |= SET_WINPOS_LAYERED_WINDOW;
         if (win->clip_clients) req->paint_flags |= SET_WINPOS_PIXEL_FORMAT;
 
         if ((ret = !wine_server_call( req )))
@@ -2509,6 +2508,13 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
         {
             icon_small = get_window_icon_info( hwnd, ICON_SMALL, icon_small, &ii_small );
             user_driver->pSetWindowIcons( hwnd, icon, &ii, icon_small, &ii_small );
+            if (icon_small)
+            {
+                NtGdiDeleteObjectApp( ii_small.hbmColor );
+                NtGdiDeleteObjectApp( ii_small.hbmMask );
+            }
+            NtGdiDeleteObjectApp( ii.hbmColor );
+            NtGdiDeleteObjectApp( ii.hbmMask );
         }
 
         owner_hint = NtUserGetWindowRelative(hwnd, GW_OWNER);
@@ -5288,7 +5294,7 @@ BOOL WINAPI NtUserFlashWindowEx( FLASHWINFO *info )
 
     if (is_iconic( info->hwnd ))
     {
-        NtUserRedrawWindow( info->hwnd, 0, 0, RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_FRAME );
+        NtUserRedrawWindow( info->hwnd, 0, 0, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME );
 
         win = get_win_ptr( info->hwnd );
         if (!win || win == WND_OTHER_PROCESS || win == WND_DESKTOP) return FALSE;
@@ -5319,7 +5325,7 @@ BOOL WINAPI NtUserFlashWindowEx( FLASHWINFO *info )
         release_win_ptr( win );
 
         if (!info->dwFlags || info->dwFlags & FLASHW_CAPTION)
-            send_message( hwnd, WM_NCACTIVATE, wparam, 0 );
+            send_notify_message( hwnd, WM_NCACTIVATE, wparam, 0, 0 );
 
         user_driver->pFlashWindowEx( info );
         return wparam;
@@ -5763,13 +5769,16 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
 
     SERVER_START_REQ( create_window )
     {
+        struct window_info info =
+        {
+            .instance   = wine_server_client_ptr( cs->hInstance ),
+            .style      = { .ws = style, .ex = ex_style },
+        };
+        wine_server_add_data( req, &info, sizeof(info) );
         req->parent          = wine_server_user_handle( parent );
         req->owner           = wine_server_user_handle( owner );
         req->class_instance  = wine_server_client_ptr( class_instance );
-        req->instance        = wine_server_client_ptr( cs->hInstance );
         req->dpi_context     = dpi_context;
-        req->style           = style;
-        req->ex_style        = ex_style;
         req->ansi            = ansi;
         req->atom            = wine_server_add_atom( req, name );
         req->dpi             = dpi;

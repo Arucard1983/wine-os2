@@ -94,6 +94,7 @@ static statement_t *make_statement_parameterized_type( struct location where, ty
 static statement_t *make_statement_delegate( struct location where, type_t *ret, var_list_t *args );
 static statement_list_t *append_statement(statement_list_t *list, statement_t *stmt);
 static statement_list_t *append_statements(statement_list_t *, statement_list_t *);
+static statement_list_t *insert_statement( statement_list_t *list, statement_t *stmt );
 
 static struct namespace global_namespace = {
     NULL, NULL, LIST_INIT(global_namespace.entry), LIST_INIT(global_namespace.children)
@@ -331,6 +332,7 @@ PARSER_LTYPE pop_import(void);
 %type <var_list> m_args arg_list args dispint_meths
 %type <var_list> fields ne_union_fields cases enums enum_list dispint_props field
 %type <var> m_ident ident
+%type <type> decl_ptr_or_ref
 %type <declarator> declarator direct_declarator init_declarator struct_declarator
 %type <declarator> m_any_declarator any_declarator any_declarator_no_direct any_direct_declarator
 %type <declarator> m_abstract_declarator abstract_declarator abstract_declarator_no_direct abstract_direct_declarator
@@ -466,7 +468,7 @@ imp_statements
 
 int_statements
 	: %empty				{ $$ = NULL; }
-	| int_statements statement		{ $$ = append_statement($1, $2); }
+	| int_statements statement		{ $$ = insert_statement( $1, $2 ); }
 	;
 
 semicolon_opt
@@ -1036,8 +1038,10 @@ parameterized_type_arg:
 	  base_type				{ $$ = $1; }
 	| qualified_type			{ $$ = $1; }
 	| qualified_type '*'			{ $$ = type_new_pointer($1); }
+	| qualified_type '&'			{ $$ = type_new_reference($1); }
 	| parameterized_type			{ $$ = $1; }
 	| parameterized_type '*'		{ $$ = type_new_pointer($1); }
+	| parameterized_type '&'		{ $$ = type_new_reference($1); }
 	;
 
 parameterized_type_args:
@@ -1221,9 +1225,14 @@ decl_spec_no_type:
 	| storage_cls_spec m_decl_spec_no_type  { $$ = make_decl_spec(NULL, $2, NULL, $1, 0, 0); }
 	;
 
+decl_ptr_or_ref:
+          '*'                                   { $$ = type_new_pointer(NULL); }
+        | '&'                                   { $$ = type_new_reference(NULL); }
+        ;
+
 declarator:
-	  '*' m_type_qual_list declarator %prec PPTR
-						{ $$ = $3; append_chain_type($$, type_new_pointer(NULL), $2); }
+	  decl_ptr_or_ref m_type_qual_list declarator %prec PPTR
+						{ $$ = $3; append_chain_type($$, $1, $2); }
 	| callconv declarator			{ $$ = $2; append_chain_callconv( @$, $$->type, $1 ); }
 	| direct_declarator
 	;
@@ -1237,16 +1246,16 @@ direct_declarator:
 
 /* abstract declarator */
 abstract_declarator:
-	  '*' m_type_qual_list m_abstract_declarator %prec PPTR
-						{ $$ = $3; append_chain_type($$, type_new_pointer(NULL), $2); }
+	  decl_ptr_or_ref m_type_qual_list m_abstract_declarator %prec PPTR
+						{ $$ = $3; append_chain_type($$, $1, $2); }
 	| callconv m_abstract_declarator	{ $$ = $2; append_chain_callconv( @$, $$->type, $1 ); }
 	| abstract_direct_declarator
 	;
 
 /* abstract declarator without accepting direct declarator */
 abstract_declarator_no_direct:
-	  '*' m_type_qual_list m_any_declarator %prec PPTR
-						{ $$ = $3; append_chain_type($$, type_new_pointer(NULL), $2); }
+	  decl_ptr_or_ref m_type_qual_list m_any_declarator %prec PPTR
+						{ $$ = $3; append_chain_type($$, $1, $2); }
 	| callconv m_any_declarator		{ $$ = $2; append_chain_callconv( @$, $$->type, $1 ); }
 	;
 
@@ -1273,16 +1282,16 @@ abstract_direct_declarator:
 
 /* abstract or non-abstract declarator */
 any_declarator:
-	  '*' m_type_qual_list m_any_declarator %prec PPTR
-						{ $$ = $3; append_chain_type($$, type_new_pointer(NULL), $2); }
+	  decl_ptr_or_ref m_type_qual_list m_any_declarator %prec PPTR
+						{ $$ = $3; append_chain_type($$, $1, $2); }
 	| callconv m_any_declarator		{ $$ = $2; append_chain_callconv( @$, $$->type, $1 ); }
 	| any_direct_declarator
 	;
 
 /* abstract or non-abstract declarator without accepting direct declarator */
 any_declarator_no_direct:
-	  '*' m_type_qual_list m_any_declarator %prec PPTR
-						{ $$ = $3; append_chain_type($$, type_new_pointer(NULL), $2); }
+	  decl_ptr_or_ref m_type_qual_list m_any_declarator %prec PPTR
+						{ $$ = $3; append_chain_type($$, $1, $2); }
 	| callconv m_any_declarator		{ $$ = $2; append_chain_callconv( @$, $$->type, $1 ); }
 	;
 
@@ -1941,6 +1950,7 @@ var_t *make_var(char *name)
   v->eval = NULL;
   init_location( &v->where, NULL, NULL );
   v->is_defined = 1;
+  v->overload = 0;
   return v;
 }
 
@@ -3220,6 +3230,23 @@ static statement_list_t *append_statement(statement_list_t *list, statement_t *s
         list_init( list );
     }
     list_add_tail( list, &stmt->entry );
+    return list;
+}
+
+/* insert a method declaration statement before any previously declared overload */
+static statement_list_t *insert_statement( statement_list_t *list, statement_t *stmt )
+{
+    statement_t *next = NULL;
+    const char *name;
+
+    if (!list || !is_function_declaration( stmt )) return append_statement( list, stmt );
+
+    name = xstrdup( get_name( stmt->u.var ) );
+    STATEMENTS_FOR_EACH_FUNC( next, list ) if (!strcmp( name, get_name( next->u.var ) )) break;
+    if (!next) return append_statement( list, stmt );
+
+    if (&next->entry != list) stmt->u.var->overload = next->u.var->overload + 1;
+    list_add_before( &next->entry, &stmt->entry );
     return list;
 }
 

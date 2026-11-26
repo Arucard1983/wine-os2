@@ -5787,8 +5787,8 @@ static void test_syscall_clobbered_regs(void)
     };
     static const BYTE code[] =
     {
-        0x48, 0x8d, 0x05, 0x00, 0x10, 0x00, 0x00,
-                                    /* leaq 0x1000(%rip),%rax */
+        0x48, 0x8d, 0x05, 0x00, 0x00, 0x01, 0x00,
+                                    /* leaq 0x10000(%rip),%rax */
         0x48, 0x25, 0x00, 0xf0, 0xff, 0xff,
                                     /* andq $~0xfff,%rax */
         0x48, 0x83, 0xe8, 0x08,     /* subq $8,%rax */
@@ -7877,8 +7877,8 @@ static void test_thread_context(void)
     context.ContextFlags = CONTEXT_CONTROL;
     status = pNtGetContextThread( thread, &context );
     ok( !status, "NtGetContextThread failed %08lx\n", status );
-    ok( (orig_context.Cpsr ^ context.Cpsr) == 0xf620fc30, "unexpected cpsr modification = %lx\n",
-        orig_context.Cpsr ^ context.Cpsr );
+    ok( (orig_context.Cpsr ^ context.Cpsr) == 0xf0200000 || broken((orig_context.Cpsr ^ context.Cpsr) == 0xf620fc30),
+        "unexpected cpsr modification = %lx\n", orig_context.Cpsr ^ context.Cpsr );
 
     status = pNtSetContextThread( thread, &orig_context );
     ok( !status, "NtSetContextThread failed %08lx\n", status );
@@ -8835,14 +8835,22 @@ static void rtlraiseexception_handler_( EXCEPTION_RECORD *rec, void *frame, CONT
                                         void *dispatcher, BOOL unhandled_handler )
 {
     void *addr = rec->ExceptionAddress;
+    ULONG context_flags;
 
     trace( "exception: %08lx flags:%lx addr:%p context: Pc:%p\n",
            rec->ExceptionCode, rec->ExceptionFlags, rec->ExceptionAddress, (void *)context->Pc );
 
     ok( addr == (char *)code_mem + 0x0c,
         "ExceptionAddress at %p instead of %p\n", addr, (char *)code_mem + 0x0c );
-    ok( context->ContextFlags == (CONTEXT_FULL | CONTEXT_UNWOUND_TO_CALL) ||
-        context->ContextFlags == (CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS),
+    context_flags = context->ContextFlags;
+    if (RtlGetEnabledExtendedFeatures( ~0ul ))
+        todo_wine
+        ok( (context_flags & CONTEXT_XSTATE) == CONTEXT_XSTATE, "missing CONTEXT_XSTATE flag\n" );
+    else
+        ok( (context_flags & CONTEXT_XSTATE) == CONTEXT_ARM64, "CONTEXT_XSTATE flag present\n" );
+    context_flags &= ~CONTEXT_XSTATE | CONTEXT_ARM64;
+    ok( context_flags == (CONTEXT_FULL | CONTEXT_UNWOUND_TO_CALL) ||
+        context_flags == (CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS),
         "wrong context flags %lx\n", context->ContextFlags );
     ok( context->Pc == (UINT_PTR)addr,
         "%d: Pc at %Ix instead of %Ix\n", test_stage, context->Pc, (UINT_PTR)addr );
@@ -13137,10 +13145,11 @@ START_TEST(exception)
         test_stage = STAGE_BREAKPOINT_NOT_HANDLED;
         test_breakpoint(1);
         test_stage = STAGE_EXCEPTION_INVHANDLE_CONTINUE;
-        test_closehandle(0, (HANDLE)0xdeadbeef);
-#ifndef __aarch64__
-        test_closehandle(0, (HANDLE)0x7fffffff);  /* apparently valid on arm64 */
-#endif
+        if (!broken(is_arm64_native_machine))  /* apparently valid on arm64 */
+        {
+            test_closehandle(0, (HANDLE)0xdeadbeef);
+            test_closehandle(0, (HANDLE)0x7fffffff);
+        }
         test_stage = STAGE_EXCEPTION_INVHANDLE_NOT_HANDLED;
         test_closehandle(1, (HANDLE)0xdeadbeef);
         test_closehandle(1, (HANDLE)~(ULONG_PTR)6);

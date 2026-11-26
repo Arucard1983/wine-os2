@@ -259,8 +259,8 @@ struct property_data
 
 struct ratio
 {
-    unsigned short num;
-    unsigned short den;
+    int num;
+    int den;
 };
 
 
@@ -1090,7 +1090,6 @@ typedef volatile struct
     unsigned int         dpi_context;
     unsigned int         fnid;
     unsigned int         ansi;
-    int                  __pad;
     unsigned int         dpi;
     struct ratio         scale;
     data_size_t          private_size;
@@ -3554,14 +3553,13 @@ struct create_window_request
     user_handle_t  owner;
     atom_t         atom;
     mod_handle_t   class_instance;
-    mod_handle_t   instance;
     unsigned int   dpi_context;
-    unsigned int   style;
-    unsigned int   ex_style;
     unsigned int   ansi;
     unsigned int   dpi;
     struct ratio   scale;
+    /* VARARG(info,window_info); */
     /* VARARG(class,unicode_str); */
+    char __pad_52[4];
 };
 struct create_window_reply
 {
@@ -3809,7 +3807,6 @@ struct set_window_pos_reply
 };
 #define SET_WINPOS_PAINT_SURFACE    0x01
 #define SET_WINPOS_PIXEL_FORMAT     0x02
-#define SET_WINPOS_LAYERED_WINDOW   0x04
 
 
 struct get_window_rectangles_request
@@ -7225,6 +7222,6 @@ union generic_reply
     struct alpc_create_port_reply alpc_create_port_reply;
 };
 
-#define SERVER_PROTOCOL_VERSION 984
+#define SERVER_PROTOCOL_VERSION 987
 
 #endif /* __WINE_WINE_SERVER_PROTOCOL_H */

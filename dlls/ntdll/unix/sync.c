@@ -56,6 +56,7 @@
 #include <time.h>
 #ifdef __APPLE__
 # include <mach/mach_time.h>
+# include <mach/mach_traps.h>
 #endif
 #ifdef HAVE_KQUEUE
 # include <sys/event.h>
@@ -2397,7 +2398,9 @@ NTSTATUS WINAPI NtSignalAndWaitForSingleObject( HANDLE signal, HANDLE wait,
  */
 NTSTATUS WINAPI NtYieldExecution(void)
 {
-#ifdef HAVE_SCHED_YIELD
+#if defined(__APPLE__)
+    return swtch() ? STATUS_SUCCESS : STATUS_NO_YIELD_PERFORMED;
+#elif defined(HAVE_SCHED_YIELD)
 #ifdef RUSAGE_THREAD
     struct rusage u1, u2;
     int ret;
@@ -2437,31 +2440,34 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
     {
         for (;;) select( 0, NULL, NULL, NULL, NULL );
     }
+    else if (!timeout->QuadPart)
+    {
+        return NtYieldExecution();
+    }
+    else if (timeout->QuadPart < 0)
+    {
+        struct timespec ts, rem;
+        timeout_t diff = -timeout->QuadPart;
+
+        ts.tv_sec  = diff / TICKSPERSEC;
+        ts.tv_nsec = (diff % TICKSPERSEC) * 100;
+        while (nanosleep( &ts, &rem ) == -1 && errno == EINTR)
+            ts = rem;
+    }
     else
     {
         LARGE_INTEGER now;
-        timeout_t when, diff;
-
-        if ((when = timeout->QuadPart) < 0)
-        {
-            NtQuerySystemTime( &now );
-            when = now.QuadPart - when;
-        }
-
-        /* Note that we yield after establishing the desired timeout, but
-           we only care about the result of the yield for zero timeouts */
-        status = NtYieldExecution();
-        if (!when) return status;
+        timeout_t when = timeout->QuadPart, diff;
 
         for (;;)
         {
-            struct timeval tv;
+            struct timespec ts;
             NtQuerySystemTime( &now );
-            diff = (when - now.QuadPart + 9) / 10;
+            diff = when - now.QuadPart;
             if (diff <= 0) break;
-            tv.tv_sec  = diff / 1000000;
-            tv.tv_usec = diff % 1000000;
-            if (select( 0, NULL, NULL, NULL, &tv ) != -1) break;
+            ts.tv_sec  = diff / TICKSPERSEC;
+            ts.tv_nsec = (diff % TICKSPERSEC) * 100;
+            if (nanosleep( &ts, NULL ) != -1 || errno != EINTR) break;
         }
     }
     return STATUS_SUCCESS;

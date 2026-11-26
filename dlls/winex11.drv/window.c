@@ -525,14 +525,13 @@ static int get_window_attributes( struct x11drv_win_data *data, XSetWindowAttrib
     attr->bit_gravity       = NorthWestGravity;
     attr->backing_store     = NotUseful;
     attr->border_pixel      = 0;
-    attr->background_pixel  = 0;
     attr->event_mask        = (ExposureMask | KeyPressMask | KeyReleaseMask |
                                FocusChangeMask | KeymapStateMask | StructureNotifyMask | PropertyChangeMask);
     /* for transparent windows, exclude mouse events to allow mouse pass-through */
     if (!(ex_style & WS_EX_TRANSPARENT)) attr->event_mask |= (PointerMotionMask | ButtonPressMask |
                                                               ButtonReleaseMask | EnterWindowMask);
 
-    return (CWSaveUnder | CWColormap | CWBorderPixel | CWBackPixel |
+    return (CWSaveUnder | CWColormap | CWBorderPixel |
             CWEventMask | CWBitGravity | CWBackingStore);
 }
 
@@ -874,14 +873,8 @@ static void set_window_icon_data( struct x11drv_win_data *data, HICON icon, cons
             }
         }
         free( bits_small );
-        NtGdiDeleteObjectApp( ii_small->hbmColor );
-        NtGdiDeleteObjectApp( ii_small->hbmMask );
     }
-
     if (!create_icon_pixmaps( hDC, ii, &icon_pixmap, &mask_pixmap )) icon_pixmap = mask_pixmap = 0;
-
-    NtGdiDeleteObjectApp( ii->hbmColor );
-    NtGdiDeleteObjectApp( ii->hbmMask );
     NtGdiDeleteObjectApp( hDC );
 
     if (data->icon_pixmap) XFreePixmap( gdi_display, data->icon_pixmap );
@@ -3067,6 +3060,7 @@ void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
 {
     struct x11drv_escape_set_drawable escape;
     struct x11drv_win_data *data;
+    int offset;
 
     escape.code = X11DRV_SET_DRAWABLE;
     escape.mode = IncludeInferiors;
@@ -3081,6 +3075,12 @@ void X11DRV_GetDC( HDC hdc, HWND hwnd, HWND top, const RECT *win_rect,
     {
         escape.drawable = data->whole_window;
         escape.visual = data->vis;
+
+        if ((offset = data->rects.window.left - data->rects.visible.left) > 0)
+            OffsetRect( &escape.dc_rect, offset, 0 );
+        if ((offset = data->rects.window.top - data->rects.visible.top) > 0)
+            OffsetRect( &escape.dc_rect, 0, offset );
+
         /* special case: when repainting the root window, clip out top-level windows */
         if (top == hwnd && data->whole_window == root_window) escape.mode = ClipByChildren;
         release_win_data( data );
